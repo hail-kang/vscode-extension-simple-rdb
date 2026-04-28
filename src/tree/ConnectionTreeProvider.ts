@@ -19,7 +19,7 @@ export class ConnectionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
   private sqlStorage: SqlFileStorage;
 
   constructor(private context: vscode.ExtensionContext) {
-    this.sqlStorage = new SqlFileStorage(context);
+    this.sqlStorage = new SqlFileStorage();
   }
 
   getSqlStorage(): SqlFileStorage {

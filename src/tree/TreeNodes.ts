@@ -59,6 +59,11 @@ export class SqlFileNode extends vscode.TreeItem {
     this.id = `sql:${connectionId}:${fileName}`;
     this.contextValue = 'sqlFile';
     this.resourceUri = vscode.Uri.parse(`untitled:${connectionId}/${fileName}`);
+    this.command = {
+      command: 'simple-rdb.openSqlFile',
+      title: 'Open SQL File',
+      arguments: [this],
+    };
   }
 }
 

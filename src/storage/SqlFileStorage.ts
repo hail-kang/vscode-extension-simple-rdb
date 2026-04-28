@@ -1,48 +1,74 @@
-import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 export class SqlFileStorage {
-  constructor(private context: vscode.ExtensionContext) {}
+  private baseDir: string;
+
+  constructor() {
+    this.baseDir = path.join(os.homedir(), '.simpledb');
+    if (!fs.existsSync(this.baseDir)) {
+      fs.mkdirSync(this.baseDir, { recursive: true });
+    }
+  }
+
+  private connectionDir(connectionId: string): string {
+    const dir = path.join(this.baseDir, connectionId);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    return dir;
+  }
 
   getSqlFileNames(connectionId: string): string[] {
-    return this.context.globalState.get<string[]>(`simple-rdb-sql-files:${connectionId}`, []);
+    const dir = this.connectionDir(connectionId);
+    try {
+      return fs.readdirSync(dir).filter((f) => f.endsWith('.sql'));
+    } catch {
+      return [];
+    }
   }
 
   async createSqlFile(connectionId: string, name: string): Promise<string> {
-    const files = this.getSqlFileNames(connectionId);
     if (!name.endsWith('.sql')) {
       name += '.sql';
     }
-    if (files.includes(name)) {
-      name = name.replace(/\.sql$/, `_${Date.now()}.sql`);
+
+    const dir = this.connectionDir(connectionId);
+    let filePath = path.join(dir, name);
+
+    if (fs.existsSync(filePath)) {
+      const base = name.replace(/\.sql$/, '');
+      name = `${base}_${Date.now()}.sql`;
+      filePath = path.join(dir, name);
     }
-    files.push(name);
-    await this.context.globalState.update(`simple-rdb-sql-files:${connectionId}`, files);
+
+    fs.writeFileSync(filePath, '');
     return name;
   }
 
   async deleteSqlFile(connectionId: string, name: string): Promise<void> {
-    const files = this.getSqlFileNames(connectionId);
-    await this.context.globalState.update(
-      `simple-rdb-sql-files:${connectionId}`,
-      files.filter((f) => f !== name),
-    );
-    await this.context.globalState.update(
-      `simple-rdb-sql-content:${connectionId}:${name}`,
-      undefined,
-    );
+    const filePath = path.join(this.connectionDir(connectionId), name);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
   }
 
   async saveContent(connectionId: string, name: string, content: string): Promise<void> {
-    await this.context.globalState.update(
-      `simple-rdb-sql-content:${connectionId}:${name}`,
-      content,
-    );
+    const filePath = path.join(this.connectionDir(connectionId), name);
+    fs.writeFileSync(filePath, content, 'utf-8');
   }
 
   getContent(connectionId: string, name: string): string {
-    return this.context.globalState.get<string>(
-      `simple-rdb-sql-content:${connectionId}:${name}`,
-      '',
-    );
+    const filePath = path.join(this.connectionDir(connectionId), name);
+    try {
+      return fs.readFileSync(filePath, 'utf-8');
+    } catch {
+      return '';
+    }
+  }
+
+  filePath(connectionId: string, name: string): string {
+    return path.join(this.connectionDir(connectionId), name);
   }
 }
