@@ -1,0 +1,128 @@
+{
+  "name": "vscode-extension-simple-rdb",
+  "displayName": "Simple RDB",
+  "description": "VSCode에서 MySQL 데이터베이스를 손쉽게 관리하는 확장",
+  "version": "0.0.2",
+  "publisher": "simple-rdb",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "simple-rdb",
+          "title": "Simple RDB",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "simple-rdb": [
+        {
+          "id": "simple-rdb-connections",
+          "name": "Connections"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "simple-rdb.addConnection",
+        "title": "Add Connection",
+        "icon": "$(add)"
+      },
+      {
+        "command": "simple-rdb.editConnection",
+        "title": "Edit Connection"
+      },
+      {
+        "command": "simple-rdb.removeConnection",
+        "title": "Remove Connection"
+      },
+      {
+        "command": "simple-rdb.connect",
+        "title": "Connect"
+      },
+      {
+        "command": "simple-rdb.disconnect",
+        "title": "Disconnect"
+      },
+      {
+        "command": "simple-rdb.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "simple-rdb.openTable",
+        "title": "Open Table"
+      },
+      {
+        "command": "simple-rdb.newSqlFile",
+        "title": "New SQL File"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "simple-rdb.addConnection",
+          "when": "view == simple-rdb-connections",
+          "group": "navigation"
+        },
+        {
+          "command": "simple-rdb.refresh",
+          "when": "view == simple-rdb-connections",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "simple-rdb.connect",
+          "when": "view == simple-rdb-connections && viewItem == connection",
+          "group": "inline"
+        },
+        {
+          "command": "simple-rdb.disconnect",
+          "when": "view == simple-rdb-connections && viewItem == connected",
+          "group": "inline"
+        },
+        {
+          "command": "simple-rdb.editConnection",
+          "when": "view == simple-rdb-connections && viewItem =~ /^(?:connection|connected)$/"
+        },
+        {
+          "command": "simple-rdb.removeConnection",
+          "when": "view == simple-rdb-connections && viewItem =~ /^(?:connection|connected)$/"
+        },
+        {
+          "command": "simple-rdb.openTable",
+          "when": "view == simple-rdb-connections && viewItem == table"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\"",
+    "package": "npm run compile && vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/ssh2": "^1.15.5",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^3.9.1",
+    "esbuild": "^0.28.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "mysql2": "^3.0.0",
+    "ssh2": "^1.0.0"
+  }
+}

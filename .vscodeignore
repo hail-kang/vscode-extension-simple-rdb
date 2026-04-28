@@ -1,0 +1,8 @@
+.git
+src
+tsconfig.json
+.vscode
+.gitignore
+esbuild.mjs
+**/*.ts
+!dist/**/*.js
