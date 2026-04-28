@@ -62,7 +62,20 @@
       },
       {
         "command": "simple-rdb.newSqlFile",
-        "title": "New SQL File"
+        "title": "New SQL File",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "simple-rdb.openSqlFile",
+        "title": "Open SQL File"
+      },
+      {
+        "command": "simple-rdb.deleteSqlFile",
+        "title": "Delete SQL File"
+      },
+      {
+        "command": "simple-rdb.runSqlFile",
+        "title": "Run SQL File"
       }
     ],
     "menus": {
@@ -98,8 +111,29 @@
           "when": "view == simple-rdb-connections && viewItem =~ /^(?:connection|connected)$/"
         },
         {
+          "command": "simple-rdb.newSqlFile",
+          "when": "view == simple-rdb-connections && viewItem =~ /^(?:connection|connected)$/"
+        },
+        {
           "command": "simple-rdb.openTable",
           "when": "view == simple-rdb-connections && viewItem == table"
+        },
+        {
+          "command": "simple-rdb.newSqlFile",
+          "when": "view == simple-rdb-connections && viewItem == sqlFileGroup",
+          "group": "inline"
+        },
+        {
+          "command": "simple-rdb.openSqlFile",
+          "when": "view == simple-rdb-connections && viewItem == sqlFile"
+        },
+        {
+          "command": "simple-rdb.runSqlFile",
+          "when": "view == simple-rdb-connections && viewItem == sqlFile"
+        },
+        {
+          "command": "simple-rdb.deleteSqlFile",
+          "when": "view == simple-rdb-connections && viewItem == sqlFile"
         }
       ]
     }

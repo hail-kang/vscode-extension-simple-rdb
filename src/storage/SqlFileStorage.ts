@@ -1,17 +1,14 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 
 export class SqlFileStorage {
-  private static readonly KEY = 'simple-rdb-sql-files';
-
   constructor(private context: vscode.ExtensionContext) {}
 
-  getSqlFileNames(): string[] {
-    return this.context.globalState.get<string[]>(SqlFileStorage.KEY, []);
+  getSqlFileNames(connectionId: string): string[] {
+    return this.context.globalState.get<string[]>(`simple-rdb-sql-files:${connectionId}`, []);
   }
 
-  async createSqlFile(name: string): Promise<string> {
-    const files = this.getSqlFileNames();
+  async createSqlFile(connectionId: string, name: string): Promise<string> {
+    const files = this.getSqlFileNames(connectionId);
     if (!name.endsWith('.sql')) {
       name += '.sql';
     }
@@ -19,36 +16,33 @@ export class SqlFileStorage {
       name = name.replace(/\.sql$/, `_${Date.now()}.sql`);
     }
     files.push(name);
-    await this.context.globalState.update(SqlFileStorage.KEY, files);
+    await this.context.globalState.update(`simple-rdb-sql-files:${connectionId}`, files);
     return name;
   }
 
-  async deleteSqlFile(name: string): Promise<void> {
-    const files = this.getSqlFileNames();
+  async deleteSqlFile(connectionId: string, name: string): Promise<void> {
+    const files = this.getSqlFileNames(connectionId);
     await this.context.globalState.update(
-      SqlFileStorage.KEY,
+      `simple-rdb-sql-files:${connectionId}`,
       files.filter((f) => f !== name),
+    );
+    await this.context.globalState.update(
+      `simple-rdb-sql-content:${connectionId}:${name}`,
+      undefined,
     );
   }
 
-  async saveContent(name: string, content: string): Promise<void> {
-    await this.context.globalState.update(`simple-rdb-sql-content:${name}`, content);
+  async saveContent(connectionId: string, name: string, content: string): Promise<void> {
+    await this.context.globalState.update(
+      `simple-rdb-sql-content:${connectionId}:${name}`,
+      content,
+    );
   }
 
-  getContent(name: string): string {
-    return this.context.globalState.get<string>(`simple-rdb-sql-content:${name}`, '');
-  }
-
-  async rename(oldName: string, newName: string): Promise<void> {
-    const content = this.getContent(oldName);
-    await this.saveContent(newName, content);
-    await this.context.globalState.update(`simple-rdb-sql-content:${oldName}`, undefined);
-
-    const files = this.getSqlFileNames();
-    const idx = files.indexOf(oldName);
-    if (idx >= 0) {
-      files[idx] = newName;
-      await this.context.globalState.update(SqlFileStorage.KEY, files);
-    }
+  getContent(connectionId: string, name: string): string {
+    return this.context.globalState.get<string>(
+      `simple-rdb-sql-content:${connectionId}:${name}`,
+      '',
+    );
   }
 }

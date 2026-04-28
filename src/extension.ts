@@ -1,19 +1,51 @@
 import * as vscode from 'vscode';
 import { ConnectionTreeProvider } from './tree/ConnectionTreeProvider';
-import { CredentialStore, StoredConnection } from './storage/CredentialStore';
-import { SqlFileStorage } from './storage/SqlFileStorage';
+import { CredentialStore } from './storage/CredentialStore';
 import { TableViewProvider } from './webview/TableViewProvider';
 import { showConnectionDialog } from './webview/ConnectionDialog';
-import { TableNode, SqlFileNode } from './tree/TreeNodes';
+import { TableNode, SqlFileNode, SqlFileGroupNode } from './tree/TreeNodes';
 
 export function activate(context: vscode.ExtensionContext) {
   const treeProvider = new ConnectionTreeProvider(context);
-  const sqlStorage = new SqlFileStorage(context);
 
   const treeView = vscode.window.createTreeView('simple-rdb-connections', {
     treeDataProvider: treeProvider,
     showCollapseAll: true,
   });
+
+  const sqlStorage = treeProvider.getSqlStorage();
+
+  context.subscriptions.push(
+    treeView.onDidChangeSelection(async (e) => {
+      const node = e.selection[0];
+      if (node instanceof SqlFileNode) {
+        const content = sqlStorage.getContent(node.connectionId, node.fileName);
+        const document = await vscode.workspace.openTextDocument({
+          content,
+          language: 'sql',
+        });
+        await vscode.window.showTextDocument(document);
+        bindAutoSave(node.connectionId, node.fileName, document);
+      }
+    }),
+  );
+
+  function bindAutoSave(connectionId: string, fileName: string, document: vscode.TextDocument) {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const disposable = vscode.workspace.onDidChangeTextDocument((e) => {
+      if (e.document.uri.toString() !== document.uri.toString()) {
+        return;
+      }
+      if (timer) {
+        clearTimeout(timer);
+      }
+      timer = setTimeout(() => {
+        sqlStorage.saveContent(connectionId, fileName, e.document.getText());
+        timer = null;
+      }, 300);
+    });
+    context.subscriptions.push(disposable);
+  }
 
   context.subscriptions.push(
     vscode.commands.registerCommand('simple-rdb.addConnection', async () => {
@@ -95,49 +127,56 @@ export function activate(context: vscode.ExtensionContext) {
       await provider.open();
     }),
 
-    vscode.commands.registerCommand('simple-rdb.newSqlFile', async () => {
-      const name = await vscode.window.showInputBox({
-        prompt: 'SQL file name',
-        placeHolder: 'query.sql',
-        validateInput: (value) => {
-          if (!value.trim()) {
-            return 'Name required';
+    vscode.commands.registerCommand(
+      'simple-rdb.newSqlFile',
+      async (node: SqlFileGroupNode | any) => {
+        let connectionId = node?.connectionId;
+        if (!connectionId) {
+          const picked = await vscode.window.showQuickPick(
+            (await CredentialStore.getConnections(context)).map((c) => ({
+              label: c.name,
+              id: c.id,
+            })),
+            { placeHolder: 'Select connection for the SQL file' },
+          );
+          if (!picked) {
+            return;
           }
-          return null;
-        },
-      });
-      if (name) {
-        const fileName = await sqlStorage.createSqlFile(name);
-        const document = await vscode.workspace.openTextDocument({
-          content: sqlStorage.getContent(fileName),
-          language: 'sql',
-        });
-        const editor = await vscode.window.showTextDocument(document);
+          connectionId = picked.id;
+        }
 
-        const onSave = editor.document;
-        vscode.workspace.onDidSaveTextDocument((e) => {
-          if (e.fileName === document.fileName) {
-            sqlStorage.saveContent(fileName, e.getText());
-          }
+        const name = await vscode.window.showInputBox({
+          prompt: 'SQL file name',
+          placeHolder: 'query.sql',
+          validateInput: (value) => {
+            if (!value.trim()) {
+              return 'Name required';
+            }
+            return null;
+          },
         });
+        if (name) {
+          const fileName = await sqlStorage.createSqlFile(connectionId, name);
+          const document = await vscode.workspace.openTextDocument({
+            content: sqlStorage.getContent(connectionId, fileName),
+            language: 'sql',
+          });
+          await vscode.window.showTextDocument(document);
+          bindAutoSave(connectionId, fileName, document);
 
-        treeProvider.refresh();
-      }
-    }),
+          treeProvider.refresh();
+        }
+      },
+    ),
 
     vscode.commands.registerCommand('simple-rdb.openSqlFile', async (node: SqlFileNode) => {
-      const content = sqlStorage.getContent(node.fileName);
+      const content = sqlStorage.getContent(node.connectionId, node.fileName);
       const document = await vscode.workspace.openTextDocument({
         content,
         language: 'sql',
       });
       await vscode.window.showTextDocument(document);
-
-      vscode.workspace.onDidSaveTextDocument((e) => {
-        if (e.languageId === 'sql') {
-          sqlStorage.saveContent(node.fileName, e.getText());
-        }
-      });
+      bindAutoSave(node.connectionId, node.fileName, document);
     }),
 
     vscode.commands.registerCommand('simple-rdb.deleteSqlFile', async (node: SqlFileNode) => {
@@ -147,8 +186,37 @@ export function activate(context: vscode.ExtensionContext) {
         'Delete',
       );
       if (confirm === 'Delete') {
-        await sqlStorage.deleteSqlFile(node.fileName);
+        await sqlStorage.deleteSqlFile(node.connectionId, node.fileName);
         treeProvider.refresh();
+      }
+    }),
+
+    vscode.commands.registerCommand('simple-rdb.runSqlFile', async (node: SqlFileNode) => {
+      const manager = treeProvider.getActiveConnection(node.connectionId);
+      if (!manager) {
+        const connect = await vscode.window.showInformationMessage(
+          'Not connected. Connect first?',
+          'Connect',
+        );
+        if (connect) {
+          await treeProvider.connectTo(node.connectionId);
+        }
+        return;
+      }
+
+      const content = sqlStorage.getContent(node.connectionId, node.fileName);
+      if (!content.trim()) {
+        vscode.window.showWarningMessage('SQL file is empty.');
+        return;
+      }
+
+      try {
+        const results = await manager.query(content);
+        vscode.window.showInformationMessage(
+          `Query executed. ${Array.isArray(results) ? results.length + ' row(s)' : 'OK'}`,
+        );
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`Query failed: ${err.message}`);
       }
     }),
   );

@@ -7,6 +7,7 @@ import {
   SqlFileGroupNode,
   SqlFileNode,
 } from './TreeNodes';
+import { SqlFileStorage } from '../storage/SqlFileStorage';
 import type { ConnectionManager } from '../db/ConnectionManager';
 
 export class ConnectionTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
@@ -15,8 +16,15 @@ export class ConnectionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
 
   private connections: StoredConnection[] = [];
   private activeConnections = new Map<string, ConnectionManager>();
+  private sqlStorage: SqlFileStorage;
 
-  constructor(private context: vscode.ExtensionContext) {}
+  constructor(private context: vscode.ExtensionContext) {
+    this.sqlStorage = new SqlFileStorage(context);
+  }
+
+  getSqlStorage(): SqlFileStorage {
+    return this.sqlStorage;
+  }
 
   refresh(node?: vscode.TreeItem): void {
     this._onDidChangeTreeData.fire(node);
@@ -70,57 +78,57 @@ export class ConnectionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
       return this.getRootChildren();
     }
 
-    if (element instanceof ConnectionNode) {
-      const manager = this.activeConnections.get(element.connection.id);
+    const ctx = element.contextValue;
+
+    if (ctx === 'connection' || ctx === 'connected') {
+      return this.getConnectionChildren((element as ConnectionNode).connection.id);
+    }
+
+    if (ctx === 'database') {
+      const dbNode = element as DatabaseNode;
+      const manager = this.activeConnections.get(dbNode.connectionId);
       if (manager) {
-        return this.getDatabaseChildren(element.connection.id, manager);
+        return this.getTableChildren(dbNode.connectionId, dbNode.databaseName, manager);
       }
       return [];
     }
 
-    if (element instanceof DatabaseNode) {
-      const manager = this.activeConnections.get(element.connectionId);
-      if (manager) {
-        return this.getTableChildren(element.connectionId, element.databaseName, manager);
-      }
-      return [];
-    }
-
-    if (element instanceof SqlFileGroupNode) {
-      return this.getSqlFileChildren();
+    if (ctx === 'sqlFileGroup') {
+      return this.getSqlFileChildren((element as SqlFileGroupNode).connectionId);
     }
 
     return [];
   }
 
   private async getRootChildren(): Promise<vscode.TreeItem[]> {
-    const items: vscode.TreeItem[] = [];
-
-    for (const conn of this.connections) {
+    return this.connections.map((conn) => {
       const isConnected = this.activeConnections.has(conn.id);
-      items.push(
-        new ConnectionNode(
-          { id: conn.id, name: conn.name, host: conn.host, port: conn.port, user: conn.user },
-          isConnected,
-        ),
+      return new ConnectionNode(
+        {
+          id: conn.id,
+          name: conn.name,
+          host: conn.host,
+          port: conn.port,
+          user: conn.user,
+        },
+        isConnected,
       );
-    }
-
-    items.push(new SqlFileGroupNode());
-    return items;
+    });
   }
 
-  private async getDatabaseChildren(
-    connectionId: string,
-    manager: ConnectionManager,
-  ): Promise<vscode.TreeItem[]> {
-    try {
-      const databases = await manager.getDatabases();
-      return databases.map((db) => new DatabaseNode(connectionId, db));
-    } catch (err: any) {
-      vscode.window.showErrorMessage(`Failed to list databases: ${err.message}`);
-      return [];
+  private async getConnectionChildren(connectionId: string): Promise<vscode.TreeItem[]> {
+    const items: vscode.TreeItem[] = [];
+    const manager = this.activeConnections.get(connectionId);
+    if (manager) {
+      try {
+        const databases = await manager.getDatabases();
+        items.push(...databases.map((db) => new DatabaseNode(connectionId, db)));
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`Failed to list databases: ${err.message}`);
+      }
     }
+    items.push(new SqlFileGroupNode(connectionId));
+    return items;
   }
 
   private async getTableChildren(
@@ -137,8 +145,9 @@ export class ConnectionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
     }
   }
 
-  private async getSqlFileChildren(): Promise<vscode.TreeItem[]> {
-    const files = this.context.globalState.get<string[]>('simple-rdb-sql-files', []);
-    return files.map((name) => new SqlFileNode(name));
+  private async getSqlFileChildren(connectionId: string): Promise<vscode.TreeItem[]> {
+    const files = this.sqlStorage.getSqlFileNames(connectionId);
+    const children = files.map((name) => new SqlFileNode(connectionId, name));
+    return children;
   }
 }

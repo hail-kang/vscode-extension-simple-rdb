@@ -1,7 +1,4 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
-
-type TreeNode = ConnectionNode | DatabaseNode | TableNode | SqlFileGroupNode | SqlFileNode;
 
 export class ConnectionNode extends vscode.TreeItem {
   constructor(
@@ -15,6 +12,7 @@ export class ConnectionNode extends vscode.TreeItem {
     public readonly isConnected: boolean,
   ) {
     super(connection.name, vscode.TreeItemCollapsibleState.Collapsed);
+    this.id = `conn:${connection.id}`;
     this.contextValue = isConnected ? 'connected' : 'connection';
     this.iconPath = new vscode.ThemeIcon(isConnected ? 'vm-running' : 'vm-connect');
     this.description = isConnected ? `${connection.host}:${connection.port}` : 'disconnected';
@@ -28,6 +26,7 @@ export class DatabaseNode extends vscode.TreeItem {
     public readonly databaseName: string,
   ) {
     super(databaseName, vscode.TreeItemCollapsibleState.Collapsed);
+    this.id = `db:${connectionId}:${databaseName}`;
     this.contextValue = 'database';
     this.iconPath = new vscode.ThemeIcon('database');
   }
@@ -40,6 +39,7 @@ export class TableNode extends vscode.TreeItem {
     public readonly tableName: string,
   ) {
     super(tableName, vscode.TreeItemCollapsibleState.None);
+    this.id = `tbl:${connectionId}:${databaseName}:${tableName}`;
     this.contextValue = 'table';
     this.iconPath = new vscode.ThemeIcon('table');
     this.command = {
@@ -50,23 +50,22 @@ export class TableNode extends vscode.TreeItem {
   }
 }
 
-export class SqlFileGroupNode extends vscode.TreeItem {
-  constructor() {
-    super('SQL Files', vscode.TreeItemCollapsibleState.Expanded);
-    this.contextValue = 'sqlFileGroup';
-    this.iconPath = new vscode.ThemeIcon('folder');
+export class SqlFileNode extends vscode.TreeItem {
+  constructor(
+    public readonly connectionId: string,
+    public readonly fileName: string,
+  ) {
+    super(fileName, vscode.TreeItemCollapsibleState.None);
+    this.id = `sql:${connectionId}:${fileName}`;
+    this.contextValue = 'sqlFile';
+    this.resourceUri = vscode.Uri.parse(`untitled:${connectionId}/${fileName}`);
   }
 }
 
-export class SqlFileNode extends vscode.TreeItem {
-  constructor(public readonly fileName: string) {
-    super(fileName, vscode.TreeItemCollapsibleState.None);
-    this.contextValue = 'sqlFile';
-    this.iconPath = new vscode.ThemeIcon('file-code');
-    this.command = {
-      command: 'simple-rdb.openSqlFile',
-      title: 'Open SQL File',
-      arguments: [this],
-    };
+export class SqlFileGroupNode extends vscode.TreeItem {
+  constructor(public readonly connectionId: string) {
+    super('SQL Files', vscode.TreeItemCollapsibleState.Collapsed);
+    this.id = `sqlgrp:${connectionId}`;
+    this.contextValue = 'sqlFileGroup';
   }
 }
