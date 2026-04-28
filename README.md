@@ -82,6 +82,9 @@ npm run watch
 # 포맷팅
 npm run format
 
+# VSIX 패키징
+npm run package
+
 # 확장 개발 실행
 # VSCode에서 F5를 누르면 Extension Development Host가 실행됩니다.
 ```
