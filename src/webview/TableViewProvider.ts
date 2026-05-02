@@ -354,6 +354,7 @@ export class TableViewProvider {
     <button id="commitBtn" class="primary hidden" onclick="commitChanges()" title="Apply Changes">
       Apply Changes (<span id="pendingCount">0</span>)
     </button>
+    <button id="cancelBtn" class="hidden" onclick="cancelChanges()" title="Cancel Changes">Cancel</button>
     <span class="spacer"></span>
     <span id="rowCount" style="font-size:12px;color:var(--vscode-descriptionForeground)"></span>
     <button onclick="exportCSV()" title="Export CSV">Export CSV</button>
@@ -747,17 +748,30 @@ export class TableViewProvider {
       const count = pendingChanges.size + pendingInserts.length + pendingDeletes.size;
       document.getElementById('pendingCount').textContent = count;
       const commitBtn = document.getElementById('commitBtn');
+      const cancelBtn = document.getElementById('cancelBtn');
       const pendingBar = document.getElementById('pendingBar');
       if (count > 0) {
         commitBtn.classList.remove('hidden');
+        cancelBtn.classList.remove('hidden');
         pendingBar.classList.remove('hidden');
         document.getElementById('pendingMsg').textContent =
           'Pending: ' + pendingChanges.size + ' update(s), ' +
           pendingInserts.length + ' insert(s), ' + pendingDeletes.size + ' delete(s)';
       } else {
         commitBtn.classList.add('hidden');
+        cancelBtn.classList.add('hidden');
         pendingBar.classList.add('hidden');
       }
+    }
+
+    function cancelChanges() {
+      pendingChanges.clear();
+      pendingInserts = [];
+      pendingDeletes.clear();
+      modifiedCells.clear();
+      insertedRows.clear();
+      updatePendingUI();
+      refreshData();
     }
 
     function showContextMenu(e, row, col, colIdx) {
