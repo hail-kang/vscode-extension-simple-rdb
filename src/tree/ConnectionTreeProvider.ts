@@ -147,7 +147,9 @@ export class ConnectionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
 
   private async getSqlFileChildren(connectionId: string): Promise<vscode.TreeItem[]> {
     const files = this.sqlStorage.getSqlFileNames(connectionId);
-    const children = files.map((name) => new SqlFileNode(connectionId, name));
+    const children = files.map(
+      (name) => new SqlFileNode(connectionId, name, this.sqlStorage.filePath(connectionId, name)),
+    );
     return children;
   }
 }
