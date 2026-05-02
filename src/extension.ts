@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ConnectionTreeProvider } from './tree/ConnectionTreeProvider';
 import { CredentialStore } from './storage/CredentialStore';
 import { TableViewProvider } from './webview/TableViewProvider';
+import { QueryResultProvider } from './webview/QueryResultProvider';
 import { showConnectionDialog } from './webview/ConnectionDialog';
 import { TableNode, SqlFileNode, SqlFileGroupNode } from './tree/TreeNodes';
 
@@ -14,6 +15,7 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   const sqlStorage = treeProvider.getSqlStorage();
+  const queryResultProvider = new QueryResultProvider(context.extensionUri);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('simple-rdb.addConnection', async () => {
@@ -175,6 +177,52 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage(
           `Query executed. ${Array.isArray(results) ? results.length + ' row(s)' : 'OK'}`,
         );
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`Query failed: ${err.message}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('simple-rdb.runQuery', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        return;
+      }
+
+      const filePath = editor.document.uri.fsPath;
+      const connectionId = sqlStorage.connectionIdFromPath(filePath);
+      if (!connectionId) {
+        vscode.window.showWarningMessage(
+          'This SQL file is not associated with a Simple RDB connection.',
+        );
+        return;
+      }
+
+      let manager = treeProvider.getActiveConnection(connectionId);
+      if (!manager) {
+        await treeProvider.connectTo(connectionId);
+        manager = treeProvider.getActiveConnection(connectionId);
+        if (!manager) {
+          return;
+        }
+      }
+
+      const sql = editor.selection.isEmpty
+        ? editor.document.getText()
+        : editor.document.getText(editor.selection);
+
+      if (!sql.trim()) {
+        vscode.window.showWarningMessage('No query to run.');
+        return;
+      }
+
+      try {
+        const results = await manager.query(sql);
+        if (Array.isArray(results) && results.length > 0) {
+          const columns = Object.keys(results[0] as object);
+          queryResultProvider.show(columns, results as Record<string, any>[], sql);
+        } else {
+          vscode.window.showInformationMessage('Query executed. No rows returned.');
+        }
       } catch (err: any) {
         vscode.window.showErrorMessage(`Query failed: ${err.message}`);
       }

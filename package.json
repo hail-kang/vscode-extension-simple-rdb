@@ -76,6 +76,10 @@
       {
         "command": "simple-rdb.runSqlFile",
         "title": "Run SQL File"
+      },
+      {
+        "command": "simple-rdb.runQuery",
+        "title": "Run SQL Query"
       }
     ],
     "menus": {
@@ -136,7 +140,19 @@
           "when": "view == simple-rdb-connections && viewItem == sqlFile"
         }
       ]
-    }
+    },
+    "keybindings": [
+      {
+        "command": "simple-rdb.runQuery",
+        "key": "cmd+enter",
+        "when": "editorLangId == sql"
+      },
+      {
+        "command": "simple-rdb.runQuery",
+        "key": "ctrl+enter",
+        "when": "editorLangId == sql"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

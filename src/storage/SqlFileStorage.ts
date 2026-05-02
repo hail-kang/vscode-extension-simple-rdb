@@ -71,4 +71,16 @@ export class SqlFileStorage {
   filePath(connectionId: string, name: string): string {
     return path.join(this.connectionDir(connectionId), name);
   }
+
+  connectionIdFromPath(filePath: string): string | null {
+    const relative = path.relative(this.baseDir, filePath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      return null;
+    }
+    const parts = relative.split(path.sep);
+    if (parts.length >= 2) {
+      return parts[0];
+    }
+    return null;
+  }
 }
