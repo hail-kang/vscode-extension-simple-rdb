@@ -10,6 +10,7 @@
   "categories": [
     "Other"
   ],
+  "icon": "media/icon.png",
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -17,7 +18,7 @@
         {
           "id": "simple-rdb",
           "title": "Simple RDB",
-          "icon": "media/icon.svg"
+          "icon": "media/icon.png"
         }
       ]
     },

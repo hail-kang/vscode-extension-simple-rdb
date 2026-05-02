@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { formatDateTime } from '../utils';
 
 export class QueryResultProvider {
   private panel: vscode.WebviewPanel | null = null;
@@ -132,7 +133,7 @@ export class QueryResultProvider {
                 .map((col) => {
                   const v = row[col];
                   const cls = v === null ? 'null-cell' : '';
-                  return `<td class="${cls}">${v === null ? 'NULL' : escapeHtml(String(v))}</td>`;
+                  return `<td class="${cls}">${v === null ? 'NULL' : escapeHtml(formatDateTime(v))}</td>`;
                 })
                 .join('')}</tr>`,
           )

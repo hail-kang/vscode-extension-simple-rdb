@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { ConnectionManager } from '../db/ConnectionManager';
+import { formatDateTime } from '../utils';
 
 interface ColumnInfo {
   name: string;
@@ -127,11 +128,15 @@ export class TableViewProvider {
       offset,
       limit,
     );
-    const rowData = rows.map((row: any, i: number) => ({
-      ...row,
-      _rowIndex: offset + i,
-      _original: { ...row },
-    }));
+    const rowData = rows.map((row: any, i: number) => {
+      const formatted: any = {};
+      for (const key of Object.keys(row)) {
+        formatted[key] = row[key] instanceof Date ? formatDateTime(row[key]) : row[key];
+      }
+      formatted._rowIndex = offset + i;
+      formatted._original = { ...row };
+      return formatted;
+    });
     this.postMessage({ type: 'data', rows: rowData, total, offset, limit });
   }
 
