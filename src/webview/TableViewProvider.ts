@@ -337,6 +337,55 @@ export class TableViewProvider {
       flex-shrink: 0;
     }
     .pending-bar.hidden { display: none; }
+    .export-dropdown { position: relative; display: inline-block; }
+    .export-dropdown .dropdown-menu {
+      display: none;
+      position: absolute;
+      right: 0;
+      top: 100%;
+      margin-top: 2px;
+      background: var(--vscode-menu-background);
+      border: 1px solid var(--vscode-menu-border);
+      border-radius: 4px;
+      min-width: 160px;
+      z-index: 200;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      padding: 4px 0;
+    }
+    .export-dropdown .dropdown-menu.visible { display: block; }
+    .export-dropdown .dropdown-item {
+      padding: 4px 16px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .export-dropdown .dropdown-item:hover {
+      background: var(--vscode-menu-selectionBackground);
+      color: var(--vscode-menu-selectionForeground);
+    }
+    .export-dropdown .dropdown-separator {
+      height: 1px;
+      background: var(--vscode-menu-separatorBackground);
+      margin: 2px 0;
+    }
+    .submenu-container {
+      position: relative;
+    }
+    .submenu-container .context-submenu {
+      display: none;
+      position: absolute;
+      left: 100%;
+      top: 0;
+      background: var(--vscode-menu-background);
+      border: 1px solid var(--vscode-menu-border);
+      border-radius: 4px;
+      min-width: 170px;
+      z-index: 101;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      padding: 4px 0;
+    }
+    .submenu-container:hover .context-submenu {
+      display: block;
+    }
     .row-num {
       color: var(--vscode-descriptionForeground);
       text-align: center;
@@ -357,8 +406,16 @@ export class TableViewProvider {
     <button id="cancelBtn" class="hidden" onclick="cancelChanges()" title="Cancel Changes">Cancel</button>
     <span class="spacer"></span>
     <span id="rowCount" style="font-size:12px;color:var(--vscode-descriptionForeground)"></span>
-    <button onclick="exportCSV()" title="Export CSV">Export CSV</button>
-    <button onclick="exportExcel()" title="Export Excel">Export Excel</button>
+    <div class="export-dropdown">
+      <button onclick="event.stopPropagation(); toggleDropdown('exportMenu')" title="Export">Export &#x25BE;</button>
+      <div class="dropdown-menu" id="exportMenu">
+        <div class="dropdown-item" onclick="closeDropdown('exportMenu'); exportCSV()">Export as CSV</div>
+        <div class="dropdown-item" onclick="closeDropdown('exportMenu'); exportJSON()">Export as JSON</div>
+        <div class="dropdown-item" onclick="closeDropdown('exportMenu'); exportMarkdown()">Export as Markdown</div>
+        <div class="dropdown-separator"></div>
+        <div class="dropdown-item" onclick="closeDropdown('exportMenu'); exportExcel()">Export as Excel</div>
+      </div>
+    </div>
   </div>
   <div id="pendingBar" class="pending-bar hidden">
     <span id="pendingMsg"></span>
@@ -791,6 +848,12 @@ export class TableViewProvider {
       addSeparator(menu);
       addMenuItem(menu, 'Copy Value', () => copyValue());
       addSeparator(menu);
+      addSubMenuItem(menu, 'Advanced Copy \u25B8', [
+        { label: 'Copy as CSV', action: () => copyAsCSV() },
+        { label: 'Copy as JSON', action: () => copyAsJSON() },
+        { label: 'Copy as Markdown', action: () => copyAsMarkdown() },
+      ]);
+      addSeparator(menu);
       addMenuItem(menu, 'Duplicate Row', () => duplicateRow());
       addMenuItem(menu, 'Delete Row', () => deleteRow(), 'danger');
 
@@ -820,6 +883,44 @@ export class TableViewProvider {
       const sep = document.createElement('div');
       sep.className = 'context-menu-separator';
       menu.appendChild(sep);
+    }
+
+    function addSubMenuItem(menu, label, items) {
+      const container = document.createElement('div');
+      container.className = 'context-menu-item submenu-container';
+      container.innerHTML = '<span>' + label + '</span>';
+      const submenu = document.createElement('div');
+      submenu.className = 'context-submenu';
+      items.forEach((item) => {
+        const child = document.createElement('div');
+        child.className = 'context-menu-item';
+        child.textContent = item.label;
+        child.addEventListener('click', () => {
+          hideAllMenus();
+          item.action();
+        });
+        submenu.appendChild(child);
+      });
+      container.appendChild(submenu);
+      menu.appendChild(container);
+    }
+
+    function hideAllMenus() {
+      document.getElementById('contextMenu').classList.remove('visible');
+      document.querySelectorAll('.dropdown-menu.visible').forEach((m) => m.classList.remove('visible'));
+    }
+
+    function toggleDropdown(id) {
+      const menu = document.getElementById(id);
+      const isVisible = menu.classList.contains('visible');
+      document.querySelectorAll('.dropdown-menu.visible').forEach((m) => m.classList.remove('visible'));
+      if (!isVisible) {
+        menu.classList.add('visible');
+      }
+    }
+
+    function closeDropdown(id) {
+      document.getElementById(id).classList.remove('visible');
     }
 
     function updatePagination() {
@@ -889,6 +990,73 @@ export class TableViewProvider {
       URL.revokeObjectURL(url);
     }
 
+    function exportJSON() {
+      const data = rows.map((row) => {
+        const obj = {};
+        columns.forEach((col) => {
+          obj[col.name] = row[col.name];
+        });
+        return obj;
+      });
+      download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), '${this.table}.json');
+    }
+
+    function exportMarkdown() {
+      let md = '| ' + columns.map((c) => c.name).join(' | ') + ' |\\n';
+      md += '| ' + columns.map(() => '---').join(' | ') + ' |\\n';
+      rows.forEach((row) => {
+        md += '| ' + columns.map((col) => {
+          const v = row[col.name];
+          if (v === null) return 'NULL';
+          return String(v).replace(/\\|/g, '\\\\|').replace(/\\n/g, ' ');
+        }).join(' | ') + ' |\\n';
+      });
+      download(new Blob([md], { type: 'text/markdown' }), '${this.table}.md');
+    }
+
+    function download(blob, name) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = name; a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function copyAsCSV() {
+      let csv = columns.map((c) => escapeCsv(c.name)).join(',') + '\\n';
+      rows.forEach((row) => {
+        csv += columns.map((col) => {
+          const v = row[col.name];
+          if (v === null) return 'NULL';
+          return escapeCsv(String(v));
+        }).join(',') + '\\n';
+      });
+      navigator.clipboard.writeText(csv);
+    }
+
+    function copyAsJSON() {
+      const data = rows.map((row) => {
+        const obj = {};
+        columns.forEach((col) => {
+          obj[col.name] = row[col.name];
+        });
+        return obj;
+      });
+      navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+    }
+
+    function copyAsMarkdown() {
+      let md = '| ' + columns.map((c) => c.name).join(' | ') + ' |\\n';
+      md += '| ' + columns.map(() => '---').join(' | ') + ' |\\n';
+      rows.forEach((row) => {
+        md += '| ' + columns.map((col) => {
+          const v = row[col.name];
+          if (v === null) return 'NULL';
+          return String(v).replace(/\\|/g, '\\\\|').replace(/\\n/g, ' ');
+        }).join(' | ') + ' |\\n';
+      });
+      navigator.clipboard.writeText(md);
+    }
+
     function escapeCsv(str) {
       if (str.includes(',') || str.includes('"') || str.includes('\\n')) {
         return '"' + str.replace(/"/g, '""') + '"';
@@ -927,6 +1095,12 @@ export class TableViewProvider {
         if (pendingChanges.size + pendingInserts.length + pendingDeletes.size > 0) {
           commitChanges();
         }
+      }
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.export-dropdown')) {
+        document.querySelectorAll('.dropdown-menu.visible').forEach((m) => m.classList.remove('visible'));
       }
     });
   </script>

@@ -257,6 +257,79 @@ export class QueryResultProvider {
       flex-shrink: 0; display: none;
     }
     .pending-bar.visible { display: flex; align-items: center; gap: 8px; }
+    .context-menu {
+      position: fixed;
+      background: var(--vscode-menu-background);
+      border: 1px solid var(--vscode-menu-border);
+      border-radius: 4px;
+      padding: 4px 0;
+      min-width: 180px;
+      z-index: 100;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      display: none;
+    }
+    .context-menu.visible { display: block; }
+    .context-menu-item {
+      padding: 4px 16px;
+      cursor: pointer;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .context-menu-item:hover {
+      background: var(--vscode-menu-selectionBackground);
+      color: var(--vscode-menu-selectionForeground);
+    }
+    .context-menu-separator {
+      height: 1px;
+      background: var(--vscode-menu-separatorBackground);
+      margin: 4px 0;
+    }
+    .submenu-container {
+      position: relative;
+    }
+    .submenu-container .context-submenu {
+      display: none;
+      position: absolute;
+      left: 100%;
+      top: 0;
+      background: var(--vscode-menu-background);
+      border: 1px solid var(--vscode-menu-border);
+      border-radius: 4px;
+      min-width: 170px;
+      z-index: 101;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      padding: 4px 0;
+    }
+    .submenu-container:hover .context-submenu {
+      display: block;
+    }
+    .export-dropdown { position: relative; display: inline-block; }
+    .export-dropdown .dropdown-menu {
+      display: none;
+      position: absolute;
+      right: 0;
+      top: 100%;
+      margin-top: 2px;
+      background: var(--vscode-menu-background);
+      border: 1px solid var(--vscode-menu-border);
+      border-radius: 4px;
+      min-width: 160px;
+      z-index: 200;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      padding: 4px 0;
+    }
+    .export-dropdown .dropdown-menu.visible { display: block; }
+    .export-dropdown .dropdown-item {
+      padding: 4px 16px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .export-dropdown .dropdown-item:hover {
+      background: var(--vscode-menu-selectionBackground);
+      color: var(--vscode-menu-selectionForeground);
+    }
   </style>
 </head>
 <body>
@@ -274,7 +347,14 @@ export class QueryResultProvider {
     `
     }
     <span class="spacer"></span>
-    <button onclick="exportCSV()">Export CSV</button>
+    <div class="export-dropdown">
+      <button onclick="event.stopPropagation(); toggleDropdown('exportMenu')" title="Export">Export &#x25BE;</button>
+      <div class="dropdown-menu" id="exportMenu">
+        <div class="dropdown-item" onclick="closeDropdown('exportMenu'); exportCSV()">Export as CSV</div>
+        <div class="dropdown-item" onclick="closeDropdown('exportMenu'); exportJSON()">Export as JSON</div>
+        <div class="dropdown-item" onclick="closeDropdown('exportMenu'); exportMarkdown()">Export as Markdown</div>
+      </div>
+    </div>
     ${editable ? '<button onclick="deleteSelected()" class="danger">Delete Row</button>' : ''}
   </div>
   <div id="pendingBar" class="pending-bar">
@@ -286,6 +366,7 @@ export class QueryResultProvider {
       <tbody id="tableBody"></tbody>
     </table>
   </div>
+  <div id="contextMenu" class="context-menu"></div>
   <script>
     const vscode = acquireVsCodeApi();
     const columns = ${columnsJson};
@@ -298,6 +379,8 @@ export class QueryResultProvider {
     let selectedRow = null;
     let selectedCells = new Set();
     let anchorCell = null;
+    let contextRow = null;
+    let contextColIndex = null;
 
     window.addEventListener('message', (e) => {
       if (e.data.type === 'updateSuccess' || e.data.type === 'deleteSuccess') {
@@ -352,6 +435,17 @@ export class QueryResultProvider {
             td.addEventListener('dblclick', () => startEdit(td, row, col, idx));
           }
 
+          td.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            if (!selectedCells.has(idx + ':' + colIdx)) {
+              selectedCells.clear();
+              selectedCells.add(idx + ':' + colIdx);
+              anchorCell = { row: idx, col: colIdx };
+              reapplySelection();
+            }
+            showContextMenu(e, idx, colIdx);
+          });
+
           tr.appendChild(td);
         });
         tbody.appendChild(tr);
@@ -386,6 +480,163 @@ export class QueryResultProvider {
       const row = rows[r];
       const v = row[col];
       return v === null ? 'NULL' : String(v);
+    }
+
+    function showContextMenu(e, rowIdx, colIdx) {
+      contextRow = rowIdx;
+      contextColIndex = colIdx;
+
+      const menu = document.getElementById('contextMenu');
+      menu.innerHTML = '';
+
+      if (selectedCells.size > 0) {
+        addSubMenuItem(menu, 'Advanced Copy \u25B8', [
+          { label: 'Copy as CSV', action: () => copySelectedAsCSV() },
+          { label: 'Copy as JSON', action: () => copySelectedAsJSON() },
+          { label: 'Copy as Markdown', action: () => copySelectedAsMarkdown() },
+        ]);
+        addSeparator(menu);
+      }
+      addMenuItem(menu, 'Copy Value', () => copySingleValue(rowIdx, colIdx));
+
+      menu.style.left = e.clientX + 'px';
+      menu.style.top = e.clientY + 'px';
+      menu.classList.add('visible');
+
+      const closeMenu = () => {
+        menu.classList.remove('visible');
+        document.removeEventListener('click', closeMenu);
+      };
+      setTimeout(() => document.addEventListener('click', closeMenu), 0);
+    }
+
+    function addMenuItem(menu, label, action) {
+      const item = document.createElement('div');
+      item.className = 'context-menu-item';
+      item.textContent = label;
+      item.addEventListener('click', () => {
+        menu.classList.remove('visible');
+        action();
+      });
+      menu.appendChild(item);
+    }
+
+    function addSeparator(menu) {
+      const sep = document.createElement('div');
+      sep.className = 'context-menu-separator';
+      menu.appendChild(sep);
+    }
+
+    function addSubMenuItem(menu, label, items) {
+      const container = document.createElement('div');
+      container.className = 'context-menu-item submenu-container';
+      container.innerHTML = '<span>' + label + '</span>';
+      const submenu = document.createElement('div');
+      submenu.className = 'context-submenu';
+      items.forEach((item) => {
+        const child = document.createElement('div');
+        child.className = 'context-menu-item';
+        child.textContent = item.label;
+        child.addEventListener('click', () => {
+          hideAllMenus();
+          item.action();
+        });
+        submenu.appendChild(child);
+      });
+      container.appendChild(submenu);
+      menu.appendChild(container);
+    }
+
+    function hideAllMenus() {
+      document.getElementById('contextMenu').classList.remove('visible');
+      document.querySelectorAll('.dropdown-menu.visible').forEach((m) => m.classList.remove('visible'));
+    }
+
+    function copySingleValue(r, c) {
+      const col = columns[c];
+      const row = rows[r];
+      const v = row[col];
+      navigator.clipboard.writeText(v === null ? 'NULL' : String(v));
+    }
+
+    function toggleDropdown(id) {
+      const menu = document.getElementById(id);
+      const isVisible = menu.classList.contains('visible');
+      document.querySelectorAll('.dropdown-menu.visible').forEach((m) => m.classList.remove('visible'));
+      if (!isVisible) {
+        menu.classList.add('visible');
+      }
+    }
+
+    function closeDropdown(id) {
+      document.getElementById(id).classList.remove('visible');
+    }
+
+    function getSelectedRowsCols() {
+      const sorted = [...selectedCells].map((k) => k.split(':').map(Number));
+      sorted.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      const minR = sorted[0][0];
+      const maxR = sorted[sorted.length - 1][0];
+      const minC = Math.min(...sorted.map((s) => s[1]));
+      const maxC = Math.max(...sorted.map((s) => s[1]));
+      const map = {};
+      sorted.forEach(([r, c]) => {
+        if (!map[r]) map[r] = {};
+        map[r][c] = getSelectedValue(r, c);
+      });
+      return { minR, maxR, minC, maxC, map, sorted };
+    }
+
+    function copySelectedAsCSV() {
+      if (selectedCells.size === 0) return;
+      const { minR, maxR, minC, maxC, map } = getSelectedRowsCols();
+      let csv = '';
+      for (let c = minC; c <= maxC; c++) {
+        csv += (c > minC ? ',' : '') + escapeCsv(columns[c]);
+      }
+      csv += '\\n';
+      for (let r = minR; r <= maxR; r++) {
+        const line = [];
+        for (let c = minC; c <= maxC; c++) {
+          const v = (map[r] && map[r][c] !== undefined) ? map[r][c] : '';
+          line.push(escapeCsv(v));
+        }
+        csv += line.join(',') + '\\n';
+      }
+      navigator.clipboard.writeText(csv);
+    }
+
+    function copySelectedAsJSON() {
+      if (selectedCells.size === 0) return;
+      const { minR, maxR, minC, maxC, map } = getSelectedRowsCols();
+      const data = [];
+      for (let r = minR; r <= maxR; r++) {
+        const obj = {};
+        for (let c = minC; c <= maxC; c++) {
+          const col = columns[c];
+          const v = (map[r] && map[r][c] !== undefined) ? map[r][c] : null;
+          obj[col] = v === 'NULL' ? null : v;
+        }
+        data.push(obj);
+      }
+      navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+    }
+
+    function copySelectedAsMarkdown() {
+      if (selectedCells.size === 0) return;
+      const { minR, maxR, minC, maxC, map } = getSelectedRowsCols();
+      let md = '| ' + columns.slice(minC, maxC + 1).join(' | ') + ' |\\n';
+      md += '| ' + columns.slice(minC, maxC + 1).map(() => '---').join(' | ') + ' |\\n';
+      for (let r = minR; r <= maxR; r++) {
+        md += '| ';
+        for (let c = minC; c <= maxC; c++) {
+          if (c > minC) md += ' | ';
+          const v = (map[r] && map[r][c] !== undefined) ? map[r][c] : '';
+          md += v.replace(/\\|/g, '\\\\|').replace(/\\n/g, ' ');
+        }
+        md += ' |\\n';
+      }
+      navigator.clipboard.writeText(md);
     }
 
     ${editableJs}
@@ -508,6 +759,30 @@ export class QueryResultProvider {
       download(new Blob([csv], { type: 'text/csv' }), 'result.csv');
     }
 
+    function exportJSON() {
+      const data = rows.map((row) => {
+        const obj = {};
+        columns.forEach((col) => {
+          obj[col] = row[col];
+        });
+        return obj;
+      });
+      download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), 'result.json');
+    }
+
+    function exportMarkdown() {
+      let md = '| ' + columns.join(' | ') + ' |\\n';
+      md += '| ' + columns.map(() => '---').join(' | ') + ' |\\n';
+      rows.forEach((row) => {
+        md += '| ' + columns.map((col) => {
+          const v = row[col];
+          if (v === null) return 'NULL';
+          return String(v).replace(/\\|/g, '\\\\|').replace(/\\n/g, ' ');
+        }).join(' | ') + ' |\\n';
+      });
+      download(new Blob([md], { type: 'text/markdown' }), 'result.md');
+    }
+
     function download(blob, name) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -521,6 +796,12 @@ export class QueryResultProvider {
       }
       return str;
     }
+
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.export-dropdown')) {
+        document.querySelectorAll('.dropdown-menu.visible').forEach((m) => m.classList.remove('visible'));
+      }
+    });
   </script>
 </body>
 </html>`;
