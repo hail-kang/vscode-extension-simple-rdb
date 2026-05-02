@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { ConnectionTreeProvider } from './tree/ConnectionTreeProvider';
 import { CredentialStore } from './storage/CredentialStore';
 import { TableViewProvider } from './webview/TableViewProvider';
-import { QueryResultProvider } from './webview/QueryResultProvider';
+import { QueryResultProvider, QueryEditContext } from './webview/QueryResultProvider';
+import { parseSqlForEditability } from './sqlParser';
 import { showConnectionDialog } from './webview/ConnectionDialog';
 import { TableNode, SqlFileNode, SqlFileGroupNode } from './tree/TreeNodes';
 
@@ -219,7 +220,35 @@ export function activate(context: vscode.ExtensionContext) {
         const results = await manager.query(sql);
         if (Array.isArray(results) && results.length > 0) {
           const columns = Object.keys(results[0] as object);
-          queryResultProvider.show(columns, results as Record<string, any>[], sql);
+
+          let editContext: QueryEditContext | undefined;
+          const parsed = parseSqlForEditability(sql);
+          if (parsed.editable && parsed.table) {
+            const pks = await manager.getPrimaryKeys(
+              parsed.database || manager.database || '',
+              parsed.table,
+            );
+            if (pks.length > 0) {
+              const resultCols = new Set(columns);
+              const hasAllPks = pks.every((pk) => resultCols.has(pk));
+              if (hasAllPks) {
+                editContext = {
+                  manager,
+                  database: parsed.database || manager.database || '',
+                  table: parsed.table,
+                  primaryKeys: pks,
+                };
+              }
+            }
+          }
+
+          queryResultProvider.show(
+            columns,
+            results as Record<string, any>[],
+            sql,
+            editContext,
+            parsed.editable ? undefined : parsed.reason,
+          );
         } else {
           vscode.window.showInformationMessage('Query executed. No rows returned.');
         }

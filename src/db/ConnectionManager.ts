@@ -33,6 +33,10 @@ export class ConnectionManager {
     this.pool = mysql.createPool(poolConfig);
   }
 
+  get database(): string | undefined {
+    return this.config.database;
+  }
+
   async disconnect(): Promise<void> {
     if (this.pool) {
       await this.pool.end();
@@ -128,6 +132,17 @@ export class ConnectionManager {
       [database, table],
     );
     return rows;
+  }
+
+  async getPrimaryKeys(database: string, table: string): Promise<string[]> {
+    const rows = await this.query(
+      `SELECT COLUMN_NAME
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_KEY = 'PRI'
+       ORDER BY ORDINAL_POSITION`,
+      [database, table],
+    );
+    return rows.map((row: any) => row.COLUMN_NAME);
   }
 
   async getTableData(
