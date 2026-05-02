@@ -407,7 +407,7 @@ export class TableViewProvider {
     <span class="spacer"></span>
     <span id="rowCount" style="font-size:12px;color:var(--vscode-descriptionForeground)"></span>
     <div class="export-dropdown">
-      <button onclick="event.stopPropagation(); toggleDropdown('exportMenu')" title="Export">Export &#x25BE;</button>
+      <button onclick="event.stopPropagation(); toggleDropdown('exportMenu')" title="Export">Export <span style="font-size:9px;opacity:0.7;margin-left:2px;">&#x25BE;</span></button>
       <div class="dropdown-menu" id="exportMenu">
         <div class="dropdown-item" onclick="closeDropdown('exportMenu'); exportCSV()">Export as CSV</div>
         <div class="dropdown-item" onclick="closeDropdown('exportMenu'); exportJSON()">Export as JSON</div>
@@ -848,7 +848,7 @@ export class TableViewProvider {
       addSeparator(menu);
       addMenuItem(menu, 'Copy Value', () => copyValue());
       addSeparator(menu);
-      addSubMenuItem(menu, 'Advanced Copy \u25B8', [
+      addSubMenuItem(menu, 'Advanced Copy', [
         { label: 'Copy as CSV', action: () => copyAsCSV() },
         { label: 'Copy as JSON', action: () => copyAsJSON() },
         { label: 'Copy as Markdown', action: () => copyAsMarkdown() },
@@ -888,7 +888,7 @@ export class TableViewProvider {
     function addSubMenuItem(menu, label, items) {
       const container = document.createElement('div');
       container.className = 'context-menu-item submenu-container';
-      container.innerHTML = '<span>' + label + '</span>';
+      container.innerHTML = '<span>' + label + '</span><span style="margin-left:auto;font-size:10px;opacity:0.7;">\u203A</span>';
       const submenu = document.createElement('div');
       submenu.className = 'context-submenu';
       items.forEach((item) => {

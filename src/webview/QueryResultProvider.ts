@@ -348,7 +348,7 @@ export class QueryResultProvider {
     }
     <span class="spacer"></span>
     <div class="export-dropdown">
-      <button onclick="event.stopPropagation(); toggleDropdown('exportMenu')" title="Export">Export &#x25BE;</button>
+      <button onclick="event.stopPropagation(); toggleDropdown('exportMenu')" title="Export">Export <span style="font-size:9px;opacity:0.7;margin-left:2px;">&#x25BE;</span></button>
       <div class="dropdown-menu" id="exportMenu">
         <div class="dropdown-item" onclick="closeDropdown('exportMenu'); exportCSV()">Export as CSV</div>
         <div class="dropdown-item" onclick="closeDropdown('exportMenu'); exportJSON()">Export as JSON</div>
@@ -490,7 +490,7 @@ export class QueryResultProvider {
       menu.innerHTML = '';
 
       if (selectedCells.size > 0) {
-        addSubMenuItem(menu, 'Advanced Copy \u25B8', [
+        addSubMenuItem(menu, 'Advanced Copy', [
           { label: 'Copy as CSV', action: () => copySelectedAsCSV() },
           { label: 'Copy as JSON', action: () => copySelectedAsJSON() },
           { label: 'Copy as Markdown', action: () => copySelectedAsMarkdown() },
@@ -530,7 +530,7 @@ export class QueryResultProvider {
     function addSubMenuItem(menu, label, items) {
       const container = document.createElement('div');
       container.className = 'context-menu-item submenu-container';
-      container.innerHTML = '<span>' + label + '</span>';
+      container.innerHTML = '<span>' + label + '</span><span style="margin-left:auto;font-size:10px;opacity:0.7;">\u203A</span>';
       const submenu = document.createElement('div');
       submenu.className = 'context-submenu';
       items.forEach((item) => {
