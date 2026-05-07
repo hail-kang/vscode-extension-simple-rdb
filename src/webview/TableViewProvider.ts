@@ -393,18 +393,6 @@ export class TableViewProvider {
       width: 40px;
       user-select: none;
       background: var(--vscode-sideBar-background);
-      cursor: pointer;
-    }
-    .row-num:hover {
-      background: var(--vscode-list-hoverBackground);
-      color: var(--vscode-list-hoverForeground);
-    }
-    .row-num.selected {
-      background: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
-    }
-    tr.row-selected td:not(.row-num) {
-      background: var(--vscode-list-activeSelectionBackground, rgba(0, 122, 204, 0.12));
     }
   </style>
 </head>
@@ -460,8 +448,6 @@ export class TableViewProvider {
     let contextColIndex = null;
     let modifiedCells = new Set();
     let insertedRows = new Set();
-    let selectedRows = new Set();
-    let anchorRow = null;
 
     window.addEventListener('message', (e) => {
       const msg = e.data;
@@ -487,8 +473,6 @@ export class TableViewProvider {
           pendingDeletes.clear();
           modifiedCells.clear();
           insertedRows.clear();
-          selectedRows.clear();
-          anchorRow = null;
           updatePendingUI();
           refreshData();
           break;
@@ -521,14 +505,8 @@ export class TableViewProvider {
         const tr = document.createElement('tr');
         const isInserted = insertedRows.has(row._rowIndex);
         if (isInserted) tr.classList.add('row-modified');
-        if (selectedRows.has(row._rowIndex)) tr.classList.add('row-selected');
 
-        const rowNumTd = document.createElement('td');
-        rowNumTd.className = 'row-num';
-        if (selectedRows.has(row._rowIndex)) rowNumTd.classList.add('selected');
-        rowNumTd.textContent = String(row._rowIndex + 1);
-        rowNumTd.addEventListener('click', (e) => toggleRowSelection(row._rowIndex, e));
-        tr.appendChild(rowNumTd);
+        tr.innerHTML = '<td class="row-num">' + (row._rowIndex + 1) + '</td>';
 
         columns.forEach((col, colIdx) => {
           const td = document.createElement('td');
@@ -570,29 +548,9 @@ export class TableViewProvider {
     }
 
     function selectCell(td, row, col, colIdx, event) {
-      document.querySelectorAll('td.selected:not(.row-num)').forEach(el => el.classList.remove('selected'));
+      document.querySelectorAll('td.selected').forEach(el => el.classList.remove('selected'));
       td.classList.add('selected');
       selectedCell = { td, row, col, colIdx };
-    }
-
-    function toggleRowSelection(rowIndex, event) {
-      if (event.shiftKey && anchorRow !== null) {
-        const rowsInView = rows.filter((r) => !insertedRows.has(r._rowIndex)).map((r) => r._rowIndex);
-        const anchorIdx = rowsInView.indexOf(anchorRow);
-        const targetIdx = rowsInView.indexOf(rowIndex);
-        if (anchorIdx === -1 || targetIdx === -1) return;
-        const start = Math.min(anchorIdx, targetIdx);
-        const end = Math.max(anchorIdx, targetIdx);
-        selectedRows.clear();
-        for (let i = start; i <= end; i++) {
-          selectedRows.add(rowsInView[i]);
-        }
-      } else {
-        selectedRows.clear();
-        selectedRows.add(rowIndex);
-        anchorRow = rowIndex;
-      }
-      renderRows();
     }
 
     function startEdit(td, row, col) {
@@ -704,10 +662,6 @@ export class TableViewProvider {
       return pks;
     }
 
-    function hasPrimaryKey() {
-      return columns.some((col) => col.columnKey === 'PRI');
-    }
-
     function addRow() {
       const newRowIndex = -1 - pendingInserts.length;
       const newRow = { _rowIndex: newRowIndex };
@@ -757,58 +711,6 @@ export class TableViewProvider {
       updatePendingUI();
     }
 
-    function deleteSelectedRows() {
-      const MAX_DELETE = 100;
-      let targets = [];
-
-      if (selectedRows.size > 0) {
-        targets = [...selectedRows].map((ri) => rows.find((r) => r._rowIndex === ri)).filter(Boolean);
-      } else if (contextRow) {
-        targets = [contextRow];
-      }
-
-      if (targets.length === 0) return;
-
-      const existingTargets = targets.filter((r) => !insertedRows.has(r._rowIndex));
-      if (existingTargets.length > 0 && !hasPrimaryKey()) {
-        alert('Cannot delete rows: this table has no primary key.');
-        return;
-      }
-      if (existingTargets.length > MAX_DELETE) {
-        alert('Cannot delete more than ' + MAX_DELETE + ' rows at once. You selected ' + existingTargets.length + ' rows.');
-        return;
-      }
-
-      if (existingTargets.length > 0) {
-        const confirmed = confirm(
-          'You are about to PERMANENTLY DELETE ' + existingTargets.length + ' row(s).\\n\\n' +
-          'This action cannot be undone. Are you sure?'
-        );
-        if (!confirmed) return;
-      }
-
-      for (const row of targets) {
-        const rowId = row._rowIndex;
-        if (insertedRows.has(rowId)) {
-          insertedRows.delete(rowId);
-          pendingInserts = pendingInserts.filter((p) => p._rowIndex !== rowId);
-        } else {
-          const pks = getPrimaryKeys(row);
-          if (!pks || Object.keys(pks).length === 0) {
-            alert('Cannot delete row #' + (rowId + 1) + ': no primary key available.');
-            continue;
-          }
-          pendingDeletes.add(JSON.stringify(pks));
-        }
-        rows = rows.filter((r) => r._rowIndex !== rowId);
-      }
-
-      selectedRows.clear();
-      anchorRow = null;
-      renderRows();
-      updatePendingUI();
-    }
-
     function deleteRow() {
       if (!contextRow) return;
       const rowId = contextRow._rowIndex;
@@ -818,15 +720,7 @@ export class TableViewProvider {
         pendingInserts = pendingInserts.filter((p) => p._rowIndex !== rowId);
         rows = rows.filter((r) => r._rowIndex !== rowId);
       } else {
-        if (!hasPrimaryKey()) {
-          alert('Cannot delete row: this table has no primary key.');
-          return;
-        }
         const pks = getPrimaryKeys(contextRow);
-        if (!pks || Object.keys(pks).length === 0) {
-          alert('Cannot delete row: no primary key available.');
-          return;
-        }
         pendingDeletes.add(JSON.stringify(pks));
         rows = rows.filter((r) => r._rowIndex !== rowId);
       }
@@ -896,17 +790,6 @@ export class TableViewProvider {
     }
 
     function commitChanges() {
-      if (pendingDeletes.size > 100) {
-        alert('Cannot commit more than 100 deletes at once. Current pending deletes: ' + pendingDeletes.size + '. Please reduce and try again.');
-        return;
-      }
-      if (pendingDeletes.size > 0) {
-        const confirmed = confirm(
-          'You are about to PERMANENTLY DELETE ' + pendingDeletes.size + ' row(s).\\n\\n' +
-          'Are you absolutely sure? This cannot be undone.'
-        );
-        if (!confirmed) return;
-      }
       for (const [, change] of pendingChanges) {
         vscode.postMessage({ type: 'updateRow', primaryKeys: change.primaryKeys, updates: change.updates });
       }
@@ -944,8 +827,6 @@ export class TableViewProvider {
       pendingDeletes.clear();
       modifiedCells.clear();
       insertedRows.clear();
-      selectedRows.clear();
-      anchorRow = null;
       updatePendingUI();
       refreshData();
     }
@@ -974,7 +855,7 @@ export class TableViewProvider {
       ]);
       addSeparator(menu);
       addMenuItem(menu, 'Duplicate Row', () => duplicateRow());
-      addMenuItem(menu, 'Delete Row', () => deleteSelectedRows(), 'danger');
+      addMenuItem(menu, 'Delete Row', () => deleteRow(), 'danger');
 
       menu.style.left = e.clientX + 'px';
       menu.style.top = e.clientY + 'px';
@@ -1203,8 +1084,8 @@ export class TableViewProvider {
     }
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Delete' && !document.querySelector('td.editing')) {
-        deleteSelectedRows();
+      if (e.key === 'Delete' && contextRow && !document.querySelector('td.editing')) {
+        deleteRow();
       }
       if (e.key === 'Enter' && selectedCell) {
         startEdit(selectedCell.td, selectedCell.row, selectedCell.col);
