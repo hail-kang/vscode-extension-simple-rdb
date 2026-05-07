@@ -67,6 +67,30 @@ export class QueryResultProvider {
             );
             this.panel?.webview.postMessage({ type: 'deleteSuccess' });
             break;
+          case 'confirmDelete': {
+            const result = await vscode.window.showWarningMessage(
+              message.message,
+              { modal: true },
+              'Delete',
+            );
+            if (result === 'Delete') {
+              for (const target of message.targets) {
+                await editContext.manager.deleteRow(
+                  editContext.database,
+                  editContext.table,
+                  target.primaryKeys,
+                );
+              }
+              this.panel?.webview.postMessage({ 
+                type: 'deleteSuccess', 
+                indices: message.targets.map((t: any) => t.index) 
+              });
+            }
+            break;
+          }
+          case 'error':
+            vscode.window.showErrorMessage(message.message);
+            break;
         }
       } catch (err: any) {
         this.panel?.webview.postMessage({ type: 'error', message: err.message });
@@ -147,14 +171,35 @@ export class QueryResultProvider {
     }
 
     function deleteSelected() {
-      if (selectedRow === null) return;
-      const row = rows[selectedRow];
-      const pkObj = {};
-      pks.forEach((k) => { pkObj[k] = row[k]; });
-      vscode.postMessage({ type: 'deleteRow', primaryKeys: pkObj });
-      rows.splice(selectedRow, 1);
-      renderRows();
-      selectedRow = null;
+      console.log('Delete selected clicked. Count:', selectedRows.size);
+      if (selectedRows.size === 0) {
+        vscode.postMessage({ type: 'error', message: 'No row selected. Click the row number (#) column to select rows first.' });
+        return;
+      }
+      if (pks.size === 0) {
+        vscode.postMessage({ type: 'error', message: 'Cannot delete rows: no primary key found for this table.' });
+        return;
+      }
+      const MAX_DELETE = 100;
+      if (selectedRows.size > MAX_DELETE) {
+        vscode.postMessage({ type: 'error', message: 'Cannot delete more than ' + MAX_DELETE + ' rows at once.' });
+        return;
+      }
+      
+      const targets = [];
+      const sorted = [...selectedRows].sort((a, b) => b - a);
+      for (const idx of sorted) {
+        const row = rows[idx];
+        const pkObj = {};
+        pks.forEach((k) => { pkObj[k] = row[k]; });
+        targets.push({ index: idx, primaryKeys: pkObj });
+      }
+
+      vscode.postMessage({ 
+        type: 'confirmDelete', 
+        message: 'Delete ' + selectedRows.size + ' row(s)? This cannot be undone.',
+        targets: targets
+      });
     }
 
     function updatePendingUI() {
@@ -330,6 +375,26 @@ export class QueryResultProvider {
       background: var(--vscode-menu-selectionBackground);
       color: var(--vscode-menu-selectionForeground);
     }
+    .row-num {
+      color: var(--vscode-descriptionForeground);
+      text-align: center;
+      min-width: 40px !important;
+      width: 40px;
+      user-select: none;
+      background: var(--vscode-sideBar-background);
+      cursor: pointer;
+    }
+    .row-num:hover {
+      background: var(--vscode-list-hoverBackground);
+      color: var(--vscode-list-hoverForeground);
+    }
+    .row-num.selected {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+    tr.row-selected td:not(.row-num) {
+      background: var(--vscode-list-activeSelectionBackground, rgba(0, 122, 204, 0.12));
+    }
   </style>
 </head>
 <body>
@@ -362,7 +427,7 @@ export class QueryResultProvider {
   </div>
   <div class="table-wrapper">
     <table>
-      <thead><tr>${columns.map((c) => `<th class="${pkSet.has(c) ? 'pk' : ''}">${escapeHtml(c)}</th>`).join('')}</tr></thead>
+      <thead><tr><th class="row-num">#</th>${columns.map((c) => `<th class="${pkSet.has(c) ? 'pk' : ''}">${escapeHtml(c)}</th>`).join('')}</tr></thead>
       <tbody id="tableBody"></tbody>
     </table>
   </div>
@@ -376,16 +441,33 @@ export class QueryResultProvider {
 
     let pendingChanges = new Map();
     let modifiedCells = new Set();
-    let selectedRow = null;
+    let selectedRows = new Set();
     let selectedCells = new Set();
     let anchorCell = null;
+    let anchorRowIdx = null;
     let contextRow = null;
     let contextColIndex = null;
 
     window.addEventListener('message', (e) => {
-      if (e.data.type === 'updateSuccess' || e.data.type === 'deleteSuccess') {
+      if (e.data.type === 'deleteSuccess') {
+        if (e.data.indices) {
+          // Multiple rows deleted via confirmDelete
+          const sorted = [...e.data.indices].sort((a, b) => b - a);
+          for (const idx of sorted) {
+            rows.splice(idx, 1);
+          }
+        }
         pendingChanges.clear();
         modifiedCells.clear();
+        selectedRows.clear();
+        anchorRowIdx = null;
+        updatePendingUI();
+        renderRows();
+      } else if (e.data.type === 'updateSuccess') {
+        pendingChanges.clear();
+        modifiedCells.clear();
+        selectedRows.clear();
+        anchorRowIdx = null;
         updatePendingUI();
         renderRows();
       } else if (e.data.type === 'error') {
@@ -403,6 +485,15 @@ export class QueryResultProvider {
       rows.forEach((row, idx) => {
         const tr = document.createElement('tr');
         tr.dataset.rowIndex = idx;
+        if (selectedRows.has(idx)) tr.classList.add('row-selected');
+
+        const rowNumTd = document.createElement('td');
+        rowNumTd.className = 'row-num';
+        if (selectedRows.has(idx)) rowNumTd.classList.add('selected');
+        rowNumTd.textContent = String(idx + 1);
+        rowNumTd.addEventListener('click', (e) => toggleRowSelection(idx, e));
+        tr.appendChild(rowNumTd);
+
         columns.forEach((col, colIdx) => {
           const td = document.createElement('td');
           td.dataset.rowIndex = idx;
@@ -453,12 +544,26 @@ export class QueryResultProvider {
     }
 
     function reapplySelection() {
-      document.querySelectorAll('td.selected').forEach((td) => td.classList.remove('selected'));
+      document.querySelectorAll('td.selected:not(.row-num)').forEach((td) => td.classList.remove('selected'));
       selectedCells.forEach((key) => {
         const [r, c] = key.split(':').map(Number);
         const td = document.querySelector('[data-row-index="' + r + '"][data-col-index="' + c + '"]');
         if (td) td.classList.add('selected');
       });
+    }
+
+    function toggleRowSelection(idx, event) {
+      if (event.shiftKey && anchorRowIdx !== null) {
+        const start = Math.min(anchorRowIdx, idx);
+        const end = Math.max(anchorRowIdx, idx);
+        selectedRows.clear();
+        for (let i = start; i <= end; i++) { selectedRows.add(i); }
+      } else {
+        selectedRows.clear();
+        selectedRows.add(idx);
+        anchorRowIdx = idx;
+      }
+      renderRows();
     }
 
     function selectRange(r1, c1, r2, c2) {
