@@ -528,6 +528,18 @@ export class TableViewProvider {
         if (selectedRows.has(row._rowIndex)) rowNumTd.classList.add('selected');
         rowNumTd.textContent = String(row._rowIndex + 1);
         rowNumTd.addEventListener('click', (e) => toggleRowSelection(row._rowIndex, e));
+        rowNumTd.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          if (!selectedRows.has(row._rowIndex)) {
+            selectedRows.clear();
+            selectedRows.add(row._rowIndex);
+            anchorRow = row._rowIndex;
+            renderRows();
+          }
+          contextRow = row;
+          contextColIndex = null;
+          showContextMenu(e, row, null, null);
+        });
         tr.appendChild(rowNumTd);
 
         columns.forEach((col, colIdx) => {
@@ -585,6 +597,13 @@ export class TableViewProvider {
         const end = Math.max(anchorIdx, targetIdx);
         selectedRows.clear();
         for (let i = start; i <= end; i++) { selectedRows.add(rowsInView[i]); }
+      } else if (event.ctrlKey || event.metaKey) {
+        if (selectedRows.has(rowIndex)) {
+          selectedRows.delete(rowIndex);
+        } else {
+          selectedRows.add(rowIndex);
+          anchorRow = rowIndex;
+        }
       } else {
         selectedRows.clear();
         selectedRows.add(rowIndex);
@@ -937,22 +956,32 @@ export class TableViewProvider {
       const menu = document.getElementById('contextMenu');
       menu.innerHTML = '';
 
-      const temporalTypes = ['datetime', 'timestamp', 'date', 'time'];
-      const isTemporal = temporalTypes.includes(col.dataType);
+      if (col) {
+        const temporalTypes = ['datetime', 'timestamp', 'date', 'time'];
+        const isTemporal = temporalTypes.includes(col.dataType);
 
-      addMenuItem(menu, 'Set NULL', () => setNull());
-      if (isTemporal) {
-        addMenuItem(menu, 'Set NOW()', () => setNow());
+        addMenuItem(menu, 'Set NULL', () => setNull());
+        if (isTemporal) {
+          addMenuItem(menu, 'Set NOW()', () => setNow());
+        }
+        addSeparator(menu);
+        addMenuItem(menu, 'Copy Value', () => copyValue());
+        addSeparator(menu);
+        addSubMenuItem(menu, 'Advanced Copy', [
+          { label: 'Copy as CSV', action: () => copyAsCSV() },
+          { label: 'Copy as JSON', action: () => copyAsJSON() },
+          { label: 'Copy as Markdown', action: () => copyAsMarkdown() },
+        ]);
+        addSeparator(menu);
+      } else if (selectedRows.size > 0) {
+        addSubMenuItem(menu, 'Copy Row(s)', [
+          { label: 'Copy as CSV', action: () => copySelectedRowsAsCSV() },
+          { label: 'Copy as JSON', action: () => copySelectedRowsAsJSON() },
+          { label: 'Copy as Markdown', action: () => copySelectedRowsAsMarkdown() },
+        ]);
+        addSeparator(menu);
       }
-      addSeparator(menu);
-      addMenuItem(menu, 'Copy Value', () => copyValue());
-      addSeparator(menu);
-      addSubMenuItem(menu, 'Advanced Copy', [
-        { label: 'Copy as CSV', action: () => copyAsCSV() },
-        { label: 'Copy as JSON', action: () => copyAsJSON() },
-        { label: 'Copy as Markdown', action: () => copyAsMarkdown() },
-      ]);
-      addSeparator(menu);
+
       addMenuItem(menu, 'Duplicate Row', () => duplicateRow());
       addMenuItem(menu, 'Delete Row', () => deleteSelectedRows(), 'danger');
 
@@ -1118,6 +1147,43 @@ export class TableViewProvider {
       const a = document.createElement('a');
       a.href = url; a.download = name; a.click();
       URL.revokeObjectURL(url);
+    }
+
+    function copySelectedRowsAsCSV() {
+      const sortedIdx = [...selectedRows].sort((a, b) => a - b);
+      const targets = sortedIdx.map(ri => rows.find(r => r._rowIndex === ri)).filter(Boolean);
+      let csv = columns.map(c => escapeCsv(c.name)).join(',') + '\\n';
+      targets.forEach(row => {
+        csv += columns.map(col => escapeCsv(row[col.name] === null ? 'NULL' : String(row[col.name]))).join(',') + '\\n';
+      });
+      navigator.clipboard.writeText(csv);
+    }
+
+    function copySelectedRowsAsJSON() {
+      const sortedIdx = [...selectedRows].sort((a, b) => a - b);
+      const targets = sortedIdx.map(ri => rows.find(r => r._rowIndex === ri)).filter(Boolean);
+      const data = targets.map(row => {
+        const obj = {};
+        columns.forEach(col => {
+          obj[col.name] = row[col.name];
+        });
+        return obj;
+      });
+      navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+    }
+
+    function copySelectedRowsAsMarkdown() {
+      const sortedIdx = [...selectedRows].sort((a, b) => a - b);
+      const targets = sortedIdx.map(ri => rows.find(r => r._rowIndex === ri)).filter(Boolean);
+      let md = '| ' + columns.map(c => c.name).join(' | ') + ' |\\n';
+      md += '| ' + columns.map(() => '---').join(' | ') + ' |\\n';
+      targets.forEach(row => {
+        md += '| ' + columns.map(col => {
+          const v = row[col.name];
+          return (v === null ? 'NULL' : String(v)).replace(/\\|/g, '\\\\|').replace(/\\n/g, ' ');
+        }).join(' | ') + ' |\\n';
+      });
+      navigator.clipboard.writeText(md);
     }
 
     function copyAsCSV() {

@@ -172,7 +172,24 @@ export class QueryResultProvider {
 
     function deleteSelected() {
       console.log('Delete selected clicked. Count:', selectedRows.size);
-      if (selectedRows.size === 0) {
+      let targets = [];
+      if (selectedRows.size > 0) {
+        const sorted = [...selectedRows].sort((a, b) => b - a);
+        for (const idx of sorted) {
+          const row = rows[idx];
+          const pkObj = {};
+          pks.forEach((k) => { pkObj[k] = row[k]; });
+          targets.push({ index: idx, primaryKeys: pkObj });
+        }
+      } else if (contextRow !== null) {
+        const idx = contextRow;
+        const row = rows[idx];
+        const pkObj = {};
+        pks.forEach((k) => { pkObj[k] = row[k]; });
+        targets.push({ index: idx, primaryKeys: pkObj });
+      }
+
+      if (targets.length === 0) {
         vscode.postMessage({ type: 'error', message: 'No row selected. Click the row number (#) column to select rows first.' });
         return;
       }
@@ -181,23 +198,14 @@ export class QueryResultProvider {
         return;
       }
       const MAX_DELETE = 100;
-      if (selectedRows.size > MAX_DELETE) {
+      if (targets.length > MAX_DELETE) {
         vscode.postMessage({ type: 'error', message: 'Cannot delete more than ' + MAX_DELETE + ' rows at once.' });
         return;
-      }
-      
-      const targets = [];
-      const sorted = [...selectedRows].sort((a, b) => b - a);
-      for (const idx of sorted) {
-        const row = rows[idx];
-        const pkObj = {};
-        pks.forEach((k) => { pkObj[k] = row[k]; });
-        targets.push({ index: idx, primaryKeys: pkObj });
       }
 
       vscode.postMessage({ 
         type: 'confirmDelete', 
-        message: 'Delete ' + selectedRows.size + ' row(s)? This cannot be undone.',
+        message: 'Delete ' + targets.length + ' row(s)? This cannot be undone.',
         targets: targets
       });
     }
@@ -492,6 +500,16 @@ export class QueryResultProvider {
         if (selectedRows.has(idx)) rowNumTd.classList.add('selected');
         rowNumTd.textContent = String(idx + 1);
         rowNumTd.addEventListener('click', (e) => toggleRowSelection(idx, e));
+        rowNumTd.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          if (!selectedRows.has(idx)) {
+            selectedRows.clear();
+            selectedRows.add(idx);
+            anchorRowIdx = idx;
+            renderRows();
+          }
+          showContextMenu(e, idx, null);
+        });
         tr.appendChild(rowNumTd);
 
         columns.forEach((col, colIdx) => {
@@ -558,6 +576,13 @@ export class QueryResultProvider {
         const end = Math.max(anchorRowIdx, idx);
         selectedRows.clear();
         for (let i = start; i <= end; i++) { selectedRows.add(i); }
+      } else if (event.ctrlKey || event.metaKey) {
+        if (selectedRows.has(idx)) {
+          selectedRows.delete(idx);
+        } else {
+          selectedRows.add(idx);
+          anchorRowIdx = idx;
+        }
       } else {
         selectedRows.clear();
         selectedRows.add(idx);
@@ -601,8 +626,23 @@ export class QueryResultProvider {
           { label: 'Copy as Markdown', action: () => copySelectedAsMarkdown() },
         ]);
         addSeparator(menu);
+      } else if (selectedRows.size > 0) {
+        addSubMenuItem(menu, 'Copy Row(s)', [
+          { label: 'Copy as CSV', action: () => copySelectedRowsAsCSV() },
+          { label: 'Copy as JSON', action: () => copySelectedRowsAsJSON() },
+          { label: 'Copy as Markdown', action: () => copySelectedRowsAsMarkdown() },
+        ]);
+        addSeparator(menu);
       }
-      addMenuItem(menu, 'Copy Value', () => copySingleValue(rowIdx, colIdx));
+
+      if (colIdx !== null) {
+        addMenuItem(menu, 'Copy Value', () => copySingleValue(rowIdx, colIdx));
+      }
+
+      if (editable) {
+        if (colIdx !== null) addSeparator(menu);
+        addMenuItem(menu, 'Delete Row', () => deleteSelected(), 'danger');
+      }
 
       menu.style.left = e.clientX + 'px';
       menu.style.top = e.clientY + 'px';
@@ -675,6 +715,40 @@ export class QueryResultProvider {
 
     function closeDropdown(id) {
       document.getElementById(id).classList.remove('visible');
+    }
+
+    function copySelectedRowsAsCSV() {
+      const sortedIdx = [...selectedRows].sort((a, b) => a - b);
+      let csv = columns.map(escapeCsv).join(',') + '\\n';
+      sortedIdx.forEach(idx => {
+        csv += columns.map(col => escapeCsv(rows[idx][col] === null ? 'NULL' : String(rows[idx][col]))).join(',') + '\\n';
+      });
+      navigator.clipboard.writeText(csv);
+    }
+
+    function copySelectedRowsAsJSON() {
+      const sortedIdx = [...selectedRows].sort((a, b) => a - b);
+      const data = sortedIdx.map(idx => {
+        const obj = {};
+        columns.forEach(col => {
+          obj[col] = rows[idx][col];
+        });
+        return obj;
+      });
+      navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+    }
+
+    function copySelectedRowsAsMarkdown() {
+      const sortedIdx = [...selectedRows].sort((a, b) => a - b);
+      let md = '| ' + columns.join(' | ') + ' |\\n';
+      md += '| ' + columns.map(() => '---').join(' | ') + ' |\\n';
+      sortedIdx.forEach(idx => {
+        md += '| ' + columns.map(col => {
+          const v = rows[idx][col];
+          return (v === null ? 'NULL' : String(v)).replace(/\\|/g, '\\\\|').replace(/\\n/g, ' ');
+        }).join(' | ') + ' |\\n';
+      });
+      navigator.clipboard.writeText(md);
     }
 
     function getSelectedRowsCols() {
