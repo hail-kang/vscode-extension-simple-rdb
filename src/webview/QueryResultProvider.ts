@@ -123,12 +123,12 @@ export class QueryResultProvider {
       input.value = row[col] === null ? '' : String(row[col]);
       input.addEventListener('blur', () => {
         const val = input.value.trim();
-        finishEdit(td, row, col, idx, val === '' ? null : val);
+        finishEdit(td, row, col, idx, val);
       });
       input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
           const val = input.value.trim();
-          finishEdit(td, row, col, idx, val === '' ? null : val);
+          finishEdit(td, row, col, idx, val);
         }
         if (e.key === 'Escape') cancelEdit(td, row, col);
       });
@@ -226,6 +226,29 @@ export class QueryResultProvider {
     }
 
     const originalRows = JSON.parse(JSON.stringify(rows));
+
+    function setNull() {
+      if (contextRow === null || contextColIndex === null) return;
+      const col = columns[contextColIndex];
+      const row = rows[contextRow];
+
+      if (row[col] === null) return;
+
+      row[col] = null;
+      modifiedCells.add(contextRow + ':' + col);
+      
+      const pkObj = {};
+      pks.forEach((k) => { pkObj[k] = row[k]; });
+      const key = JSON.stringify(pkObj);
+      if (!pendingChanges.has(key)) {
+        pendingChanges.set(key, { primaryKeys: pkObj, updates: { [col]: null } });
+      } else {
+        pendingChanges.get(key).updates[col] = null;
+      }
+      
+      updatePendingUI();
+      renderRows();
+    }
 
     function cancelChanges() {
       for (let i = 0; i < rows.length; i++) {
@@ -479,7 +502,7 @@ export class QueryResultProvider {
         updatePendingUI();
         renderRows();
       } else if (e.data.type === 'error') {
-        alert(e.data.message);
+        vscode.postMessage({ type: 'error', message: e.data.message });
       }
     });
 
@@ -640,7 +663,11 @@ export class QueryResultProvider {
       }
 
       if (editable) {
-        if (colIdx !== null) addSeparator(menu);
+        if (colIdx !== null) {
+          addSeparator(menu);
+          addMenuItem(menu, 'Set NULL', () => setNull());
+        }
+        addSeparator(menu);
         addMenuItem(menu, 'Delete Row', () => deleteSelected(), 'danger');
       }
 

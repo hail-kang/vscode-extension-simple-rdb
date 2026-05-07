@@ -87,6 +87,39 @@ export class TableViewProvider {
           this.postMessage({ type: 'deleteSuccess' });
           break;
         }
+        case 'confirmDelete': {
+          const result = await vscode.window.showWarningMessage(
+            message.message,
+            { modal: true },
+            'Delete',
+          );
+          if (result === 'Delete') {
+            for (const target of message.targets) {
+              if (Object.keys(target.primaryKeys).length > 0) {
+                await this.manager.deleteRow(this.database, this.table, target.primaryKeys);
+              }
+            }
+            this.postMessage({
+              type: 'deleteSuccess',
+              indices: message.targets.map((t: any) => t.index)
+            });
+          }
+          break;
+        }
+        case 'confirmCommitDeletes': {
+          const result = await vscode.window.showWarningMessage(
+            message.message,
+            { modal: true },
+            'Delete',
+          );
+          if (result === 'Delete') {
+            this.postMessage({ type: 'doCommit' });
+          }
+          break;
+        }
+        case 'error':
+          vscode.window.showErrorMessage(message.message);
+          break;
       }
     } catch (err: any) {
       this.postMessage({ type: 'error', message: err.message });
@@ -493,7 +526,19 @@ export class TableViewProvider {
           refreshData();
           break;
         case 'error':
-          alert(msg.message);
+          vscode.postMessage({ type: 'error', message: msg.message });
+          break;
+        case 'doCommit':
+          // Re-trigger commit without checks
+          for (const [, change] of pendingChanges) {
+            vscode.postMessage({ type: 'updateRow', primaryKeys: change.primaryKeys, updates: change.updates });
+          }
+          for (const ins of pendingInserts) {
+            vscode.postMessage({ type: 'insertRow', values: ins.values });
+          }
+          for (const delStr of pendingDeletes) {
+            vscode.postMessage({ type: 'deleteRow', primaryKeys: JSON.parse(delStr) });
+          }
           break;
       }
     });
@@ -640,12 +685,12 @@ export class TableViewProvider {
         }
         input.addEventListener('blur', () => {
           const val = input.value.trim();
-          finishEdit(td, row, col, val === '' ? null : val);
+          finishEdit(td, row, col, val);
         });
         input.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') {
             const val = input.value.trim();
-            finishEdit(td, row, col, val === '' ? null : val);
+            finishEdit(td, row, col, val);
           }
           if (e.key === 'Escape') {
             cancelEdit(td, row, col);
@@ -785,59 +830,41 @@ export class TableViewProvider {
       if (targets.length === 0) return;
       const existingTargets = targets.filter((r) => !insertedRows.has(r._rowIndex));
       if (existingTargets.length > 0 && !hasPrimaryKey()) {
-        alert('Cannot delete rows: this table has no primary key.');
+        vscode.postMessage({ type: 'error', message: 'Cannot delete rows: this table has no primary key.' });
         return;
       }
       if (existingTargets.length > MAX_DELETE) {
-        alert('Cannot delete more than ' + MAX_DELETE + ' rows at once.');
+        vscode.postMessage({ type: 'error', message: 'Cannot delete more than ' + MAX_DELETE + ' rows at once.' });
         return;
       }
-      if (existingTargets.length > 0 && !confirm('Delete ' + existingTargets.length + ' row(s)? This cannot be undone.')) return;
-      for (const row of targets) {
-        const rowId = row._rowIndex;
-        if (insertedRows.has(rowId)) {
+
+      if (existingTargets.length > 0) {
+        vscode.postMessage({
+          type: 'confirmDelete',
+          message: 'Delete ' + existingTargets.length + ' row(s)? This cannot be undone.',
+          targets: targets.map(r => ({
+            index: r._rowIndex,
+            primaryKeys: r._rowIndex < 0 ? {} : getPrimaryKeys(r)
+          }))
+        });
+      } else {
+        // Only pending inserts selected, can delete immediately
+        for (const row of targets) {
+          const rowId = row._rowIndex;
           insertedRows.delete(rowId);
           pendingInserts = pendingInserts.filter((p) => p._rowIndex !== rowId);
-        } else {
-          const pks = getPrimaryKeys(row);
-          if (!pks || Object.keys(pks).length === 0) {
-            alert('Cannot delete row #' + (rowId + 1) + ': no primary key.');
-            continue;
-          }
-          pendingDeletes.add(JSON.stringify(pks));
+          rows = rows.filter((r) => r._rowIndex !== rowId);
         }
-        rows = rows.filter((r) => r._rowIndex !== rowId);
+        selectedRows.clear();
+        anchorRow = null;
+        renderRows();
+        updatePendingUI();
       }
-      selectedRows.clear();
-      anchorRow = null;
-      renderRows();
-      updatePendingUI();
     }
 
     function deleteRow() {
-      if (!contextRow) return;
-      const rowId = contextRow._rowIndex;
-
-      if (insertedRows.has(rowId)) {
-        insertedRows.delete(rowId);
-        pendingInserts = pendingInserts.filter((p) => p._rowIndex !== rowId);
-        rows = rows.filter((r) => r._rowIndex !== rowId);
-      } else {
-        if (!hasPrimaryKey()) {
-          alert('Cannot delete row: this table has no primary key.');
-          return;
-        }
-        const pks = getPrimaryKeys(contextRow);
-        if (!pks || Object.keys(pks).length === 0) {
-          alert('Cannot delete row: no primary key.');
-          return;
-        }
-        pendingDeletes.add(JSON.stringify(pks));
-        rows = rows.filter((r) => r._rowIndex !== rowId);
-      }
-
-      renderRows();
-      updatePendingUI();
+      // This function seems redundant now that deleteSelectedRows handles contextRow
+      deleteSelectedRows();
     }
 
     function setNull() {
@@ -901,19 +928,31 @@ export class TableViewProvider {
     }
 
     function commitChanges() {
-      if (pendingDeletes.size > 100) {
-        alert('Cannot commit more than 100 deletes at once.');
+      const pendingDeletesCount = pendingDeletes.size;
+      if (pendingDeletesCount > 100) {
+        vscode.postMessage({ type: 'error', message: 'Cannot commit more than 100 deletes at once.' });
         return;
       }
-      if (pendingDeletes.size > 0 && !confirm('Delete ' + pendingDeletes.size + ' row(s)? Are you sure?')) return;
-      for (const [, change] of pendingChanges) {
-        vscode.postMessage({ type: 'updateRow', primaryKeys: change.primaryKeys, updates: change.updates });
-      }
-      for (const ins of pendingInserts) {
-        vscode.postMessage({ type: 'insertRow', values: ins.values });
-      }
-      for (const delStr of pendingDeletes) {
-        vscode.postMessage({ type: 'deleteRow', primaryKeys: JSON.parse(delStr) });
+      
+      const proceed = () => {
+        for (const [, change] of pendingChanges) {
+          vscode.postMessage({ type: 'updateRow', primaryKeys: change.primaryKeys, updates: change.updates });
+        }
+        for (const ins of pendingInserts) {
+          vscode.postMessage({ type: 'insertRow', values: ins.values });
+        }
+        for (const delStr of pendingDeletes) {
+          vscode.postMessage({ type: 'deleteRow', primaryKeys: JSON.parse(delStr) });
+        }
+      };
+
+      if (pendingDeletesCount > 0) {
+        vscode.postMessage({
+          type: 'confirmCommitDeletes',
+          message: 'Delete ' + pendingDeletesCount + ' row(s)? Are you sure?'
+        });
+      } else {
+        proceed();
       }
     }
 
