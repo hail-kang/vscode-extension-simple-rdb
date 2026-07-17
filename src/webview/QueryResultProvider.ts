@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { formatDateTime } from '../utils';
+import { toDisplayValue } from '../utils';
+import { cspMetaTag, toSafeJson } from './webviewSecurity';
 
 export interface QueryEditContext {
   manager: any;
@@ -109,9 +110,20 @@ export class QueryResultProvider {
     readonlyReason?: string,
   ): string {
     const pkSet = new Set(editContext?.primaryKeys ?? []);
-    const columnsJson = JSON.stringify(columns);
-    const rowsJson = JSON.stringify(rows);
-    const pkJson = JSON.stringify(editContext?.primaryKeys ?? []);
+    const cspSource = this.panel!.webview.cspSource;
+    const maxBulkDelete = vscode.workspace.getConfiguration('simpleRdb').get('maxBulkDelete', 100);
+    // Buffer/JSON 등 복합 타입을 표시용 문자열로 변환('[object Object]' 방지)
+    const displayRows = rows.map((row) => {
+      const out: Record<string, any> = {};
+      for (const col of columns) {
+        out[col] = toDisplayValue(row[col]);
+      }
+      return out;
+    });
+    // `<script>`에 직접 삽입하므로 toSafeJson으로 </script> 조기 종료(주입)를 차단한다.
+    const columnsJson = toSafeJson(columns);
+    const rowsJson = toSafeJson(displayRows);
+    const pkJson = toSafeJson(editContext?.primaryKeys ?? []);
 
     const editableJs = editable
       ? `
@@ -122,13 +134,11 @@ export class QueryResultProvider {
       const input = document.createElement('input');
       input.value = row[col] === null ? '' : String(row[col]);
       input.addEventListener('blur', () => {
-        const val = input.value.trim();
-        finishEdit(td, row, col, idx, val);
+        finishEdit(td, row, col, idx, input.value);
       });
       input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
-          const val = input.value.trim();
-          finishEdit(td, row, col, idx, val);
+          finishEdit(td, row, col, idx, input.value);
         }
         if (e.key === 'Escape') cancelEdit(td, row, col);
       });
@@ -138,6 +148,12 @@ export class QueryResultProvider {
 
     function finishEdit(td, row, col, idx, newVal) {
       td.classList.remove('editing');
+      // NULL 셀을 열었다 빈 값으로 나가면 NULL→'' 변경으로 오인해 큐잉하지 않는다
+      if (row[col] === null && newVal === '') {
+        td.textContent = 'NULL';
+        td.classList.add('null-cell');
+        return;
+      }
       if (newVal === null) { td.textContent = 'NULL'; td.classList.add('null-cell'); }
       else { td.textContent = String(newVal); td.classList.remove('null-cell'); }
 
@@ -146,8 +162,7 @@ export class QueryResultProvider {
         modifiedCells.add(idx + ':' + col);
         td.classList.add('modified');
 
-        const pkObj = {};
-        pks.forEach((k) => { pkObj[k] = row[k]; });
+        const pkObj = getOriginalPk(idx);
         const key = JSON.stringify(pkObj);
         if (!pendingChanges.has(key)) {
           pendingChanges.set(key, { primaryKeys: pkObj, updates: { [col]: newVal } });
@@ -176,17 +191,11 @@ export class QueryResultProvider {
       if (selectedRows.size > 0) {
         const sorted = [...selectedRows].sort((a, b) => b - a);
         for (const idx of sorted) {
-          const row = rows[idx];
-          const pkObj = {};
-          pks.forEach((k) => { pkObj[k] = row[k]; });
-          targets.push({ index: idx, primaryKeys: pkObj });
+          targets.push({ index: idx, primaryKeys: getOriginalPk(idx) });
         }
       } else if (contextRow !== null) {
         const idx = contextRow;
-        const row = rows[idx];
-        const pkObj = {};
-        pks.forEach((k) => { pkObj[k] = row[k]; });
-        targets.push({ index: idx, primaryKeys: pkObj });
+        targets.push({ index: idx, primaryKeys: getOriginalPk(idx) });
       }
 
       if (targets.length === 0) {
@@ -197,7 +206,7 @@ export class QueryResultProvider {
         vscode.postMessage({ type: 'error', message: 'Cannot delete rows: no primary key found for this table.' });
         return;
       }
-      const MAX_DELETE = 100;
+      const MAX_DELETE = ${maxBulkDelete};
       if (targets.length > MAX_DELETE) {
         vscode.postMessage({ type: 'error', message: 'Cannot delete more than ' + MAX_DELETE + ' rows at once.' });
         return;
@@ -236,9 +245,8 @@ export class QueryResultProvider {
 
       row[col] = null;
       modifiedCells.add(contextRow + ':' + col);
-      
-      const pkObj = {};
-      pks.forEach((k) => { pkObj[k] = row[k]; });
+
+      const pkObj = getOriginalPk(contextRow);
       const key = JSON.stringify(pkObj);
       if (!pendingChanges.has(key)) {
         pendingChanges.set(key, { primaryKeys: pkObj, updates: { [col]: null } });
@@ -268,6 +276,7 @@ export class QueryResultProvider {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  ${cspMetaTag(cspSource)}
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Query Result</title>
   <style>
@@ -470,6 +479,17 @@ export class QueryResultProvider {
     const pks = new Set(${pkJson});
     const editable = ${editable};
 
+    // 각 행의 '원본' PK 값 스냅샷. PK 셀을 편집해도 WHERE는 항상 원본 PK로 만들어야
+    // 엉뚱한 행을 덮어쓰지 않는다. 행 삭제 시 이 배열도 함께 splice로 동기화한다.
+    const originalPk = rows.map((row) => {
+      const o = {};
+      pks.forEach((k) => { o[k] = row[k]; });
+      return o;
+    });
+    function getOriginalPk(idx) {
+      return { ...(originalPk[idx] || {}) };
+    }
+
     let pendingChanges = new Map();
     let modifiedCells = new Set();
     let selectedRows = new Set();
@@ -486,6 +506,9 @@ export class QueryResultProvider {
           const sorted = [...e.data.indices].sort((a, b) => b - a);
           for (const idx of sorted) {
             rows.splice(idx, 1);
+            originalPk.splice(idx, 1);
+            // 원본 스냅샷도 함께 정렬 유지 → 이후 Cancel이 엉뚱한 행을 복원하지 않음(M-11)
+            if (typeof originalRows !== 'undefined') originalRows.splice(idx, 1);
           }
         }
         pendingChanges.clear();
@@ -495,6 +518,12 @@ export class QueryResultProvider {
         updatePendingUI();
         renderRows();
       } else if (e.data.type === 'updateSuccess') {
+        // 커밋된 값을 원본 스냅샷에 반영 → 이후 Cancel이 커밋된 값을 되돌리지 않음(M-11)
+        if (typeof originalRows !== 'undefined') {
+          for (let i = 0; i < rows.length; i++) {
+            for (const key of Object.keys(rows[i])) originalRows[i][key] = rows[i][key];
+          }
+        }
         pendingChanges.clear();
         modifiedCells.clear();
         selectedRows.clear();
@@ -677,6 +706,9 @@ export class QueryResultProvider {
 
       const closeMenu = () => {
         menu.classList.remove('visible');
+        // 메뉴가 닫히면 컨텍스트 대상도 비워, 이후 Delete가 과거 우클릭 행을 삭제하지 않게 한다(M-20)
+        contextRow = null;
+        contextColIndex = null;
         document.removeEventListener('click', closeMenu);
       };
       setTimeout(() => document.addEventListener('click', closeMenu), 0);
@@ -820,8 +852,8 @@ export class QueryResultProvider {
         const obj = {};
         for (let c = minC; c <= maxC; c++) {
           const col = columns[c];
-          const v = (map[r] && map[r][c] !== undefined) ? map[r][c] : null;
-          obj[col] = v === 'NULL' ? null : v;
+          // 표시 문자열이 아닌 원본 값을 사용해 null/숫자 등 타입을 보존한다(M-15)
+          obj[col] = rows[r] ? rows[r][col] : null;
         }
         data.push(obj);
       }
@@ -913,8 +945,7 @@ export class QueryResultProvider {
             if (String(oldVal) !== String(newVal)) {
               rows[r][col] = newVal;
               modifiedCells.add(r + ':' + col);
-              const pkObj = {};
-              pks.forEach((k) => { pkObj[k] = rows[r][k]; });
+              const pkObj = getOriginalPk(r);
               const key = JSON.stringify(pkObj);
               if (!pendingChanges.has(key)) {
                 pendingChanges.set(key, { primaryKeys: pkObj, updates: { [col]: newVal } });
@@ -997,7 +1028,12 @@ export class QueryResultProvider {
     }
 
     function escapeCsv(str) {
-      if (str.includes(',') || str.includes('"') || str.includes('\\n')) {
+      str = String(str);
+      // CSV 수식 주입 방지: =, +, -, @, 탭, CR로 시작하면 작은따옴표로 무력화
+      if (/^[=+\\-@\\t\\r]/.test(str)) {
+        str = "'" + str;
+      }
+      if (str.includes(',') || str.includes('"') || str.includes('\\n') || str.includes('\\r')) {
         return '"' + str.replace(/"/g, '""') + '"';
       }
       return str;

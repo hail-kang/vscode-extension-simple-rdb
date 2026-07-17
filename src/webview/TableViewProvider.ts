@@ -1,24 +1,26 @@
 import * as vscode from 'vscode';
 import type { ConnectionManager } from '../db/ConnectionManager';
-import { formatDateTime } from '../utils';
+import { toDisplayValue } from '../utils';
+import { cspMetaTag, escapeHtml, toSafeJson } from './webviewSecurity';
 
-interface ColumnInfo {
-  name: string;
-  dataType: string;
-  columnType: string;
-  isNullable: boolean;
-  columnKey: string;
-  extra: string;
-  comment: string;
-  isEnum: boolean;
-  enumValues: string[];
-}
-
-interface RowData {
-  _rowIndex: number;
-  _original: Record<string, any>;
-  [key: string]: any;
-}
+/** 그리드에서 인라인 편집을 막을 컬럼 타입(값이 Buffer/객체로 와서 문자열 편집 시 훼손됨). */
+const READONLY_COLUMN_TYPES = new Set([
+  'blob',
+  'tinyblob',
+  'mediumblob',
+  'longblob',
+  'binary',
+  'varbinary',
+  'json',
+  'geometry',
+  'point',
+  'linestring',
+  'polygon',
+  'multipoint',
+  'multilinestring',
+  'multipolygon',
+  'geometrycollection',
+]);
 
 export class TableViewProvider {
   static readonly viewType = 'simple-rdb.tableData';
@@ -147,11 +149,13 @@ export class TableViewProvider {
         comment: col.COLUMN_COMMENT,
         isEnum,
         enumValues,
+        readonly: READONLY_COLUMN_TYPES.has(col.DATA_TYPE),
       };
     });
     this.postMessage({ type: 'columns', columns: processed });
 
-    await this.fetchData(0, 100);
+    const pageSize = vscode.workspace.getConfiguration('simpleRdb').get('pageSize', 100);
+    await this.fetchData(0, pageSize);
   }
 
   private async fetchData(offset: number, limit: number): Promise<void> {
@@ -164,7 +168,7 @@ export class TableViewProvider {
     const rowData = rows.map((row: any, i: number) => {
       const formatted: any = {};
       for (const key of Object.keys(row)) {
-        formatted[key] = row[key] instanceof Date ? formatDateTime(row[key]) : row[key];
+        formatted[key] = toDisplayValue(row[key]);
       }
       formatted._rowIndex = offset + i;
       formatted._original = { ...row };
@@ -178,12 +182,21 @@ export class TableViewProvider {
   }
 
   private getHtml(): string {
+    const cspSource = this.panel!.webview.cspSource;
+    const maxBulkDelete = vscode.workspace.getConfiguration('simpleRdb').get('maxBulkDelete', 100);
+    const title = escapeHtml(`${this.database}.${this.table}`);
+    // 파일명은 <script> 안의 JS 문자열로 들어가므로 toSafeJson으로 </script> 조기 종료도 차단
+    const csvName = toSafeJson(`${this.table}.csv`);
+    const xlsName = toSafeJson(`${this.table}.xls`);
+    const jsonName = toSafeJson(`${this.table}.json`);
+    const mdName = toSafeJson(`${this.table}.md`);
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  ${cspMetaTag(cspSource)}
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${this.database}.${this.table}</title>
+  <title>${title}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -514,7 +527,6 @@ export class TableViewProvider {
           break;
         case 'updateSuccess':
         case 'insertSuccess':
-        case 'deleteSuccess':
           pendingChanges.clear();
           pendingInserts = [];
           pendingDeletes.clear();
@@ -525,6 +537,36 @@ export class TableViewProvider {
           updatePendingUI();
           refreshData();
           break;
+        case 'deleteSuccess': {
+          // 즉시 삭제는 이미 커밋됨. 삭제된 행과 그 pending만 제거하고 나머지 편집 버퍼는 보존한다(M-22).
+          const deleted = new Set(msg.indices || []);
+          for (const ri of deleted) {
+            pendingInserts = pendingInserts.filter((p) => p._rowIndex !== ri);
+            insertedRows.delete(ri);
+            const row = rows.find((r) => r._rowIndex === ri);
+            if (row) {
+              pendingChanges.delete(JSON.stringify(getPrimaryKeys(row)));
+            }
+            for (const k of [...modifiedCells]) {
+              if (k.startsWith(ri + ':')) modifiedCells.delete(k);
+            }
+          }
+          selectedRows.clear();
+          anchorRow = null;
+          if (pendingChanges.size + pendingInserts.length > 0) {
+            // 편집 버퍼가 남아 있으면 재조회로 덮어쓰지 않고 로컬에서만 삭제를 반영한다.
+            rows = rows.filter((r) => !deleted.has(r._rowIndex));
+            totalRows = Math.max(0, totalRows - deleted.size);
+            updatePendingUI();
+            renderRows();
+            updatePagination();
+            updateRowCount();
+          } else {
+            updatePendingUI();
+            refreshData();
+          }
+          break;
+        }
         case 'error':
           vscode.postMessage({ type: 'error', message: msg.message });
           break;
@@ -552,16 +594,29 @@ export class TableViewProvider {
         let classes = '';
         if (col.columnKey === 'PRI') classes += ' pk';
         if (col.isNullable) classes += ' nullable';
-        headerRow.innerHTML += '<th class="' + classes + '" title="' +
-          col.name + ' (' + col.dataType + ')' +
-          (col.comment ? ' - ' + col.comment : '') +
-          '">' + col.name + '</th>';
+        const title = escapeHtml(
+          col.name + ' (' + col.dataType + ')' + (col.comment ? ' - ' + col.comment : ''),
+        );
+        headerRow.innerHTML +=
+          '<th class="' + classes + '" title="' + title + '">' + escapeHtml(col.name) + '</th>';
       });
     }
 
     function renderRows() {
       const tbody = document.getElementById('tableBody');
       tbody.innerHTML = '';
+      if (rows.length === 0) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = columns.length + 1;
+        td.textContent = 'No rows';
+        td.style.textAlign = 'center';
+        td.style.padding = '16px';
+        td.style.color = 'var(--vscode-descriptionForeground)';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        return;
+      }
       rows.forEach((row, idx) => {
         const tr = document.createElement('tr');
         const isInserted = insertedRows.has(row._rowIndex);
@@ -659,6 +714,10 @@ export class TableViewProvider {
 
     function startEdit(td, row, col) {
       if (td.classList.contains('editing')) return;
+      if (col.readonly) {
+        vscode.postMessage({ type: 'error', message: '이 컬럼(BLOB/JSON/이진 타입)은 그리드에서 편집할 수 없습니다.' });
+        return;
+      }
 
       const currentValue = row[col.name];
 
@@ -684,13 +743,11 @@ export class TableViewProvider {
           input.placeholder = 'NULL';
         }
         input.addEventListener('blur', () => {
-          const val = input.value.trim();
-          finishEdit(td, row, col, val);
+          finishEdit(td, row, col, input.value);
         });
         input.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') {
-            const val = input.value.trim();
-            finishEdit(td, row, col, val);
+            finishEdit(td, row, col, input.value);
           }
           if (e.key === 'Escape') {
             cancelEdit(td, row, col);
@@ -704,6 +761,12 @@ export class TableViewProvider {
 
     function finishEdit(td, row, col, newValue) {
       td.classList.remove('editing');
+      // NULL 셀을 열었다 빈 값으로 나가면 NULL→'' 변경으로 오인해 큐잉하지 않는다
+      if (row[col.name] === null && newValue === '') {
+        td.textContent = 'NULL';
+        td.classList.add('null-cell');
+        return;
+      }
       td.textContent = '';
       if (newValue === null) {
         td.textContent = 'NULL';
@@ -820,7 +883,7 @@ export class TableViewProvider {
     }
 
     function deleteSelectedRows() {
-      const MAX_DELETE = 100;
+      const MAX_DELETE = ${maxBulkDelete};
       let targets = [];
       if (selectedRows.size > 0) {
         targets = [...selectedRows].map((ri) => rows.find((r) => r._rowIndex === ri)).filter(Boolean);
@@ -1030,6 +1093,9 @@ export class TableViewProvider {
 
       const closeMenu = () => {
         menu.classList.remove('visible');
+        // 메뉴가 닫히면 컨텍스트 대상도 비워, Delete 키가 과거 우클릭 행을 삭제하지 않게 한다(M-20)
+        contextRow = null;
+        contextColIndex = null;
         document.removeEventListener('click', closeMenu);
       };
       setTimeout(() => document.addEventListener('click', closeMenu), 0);
@@ -1091,7 +1157,8 @@ export class TableViewProvider {
     }
 
     function updatePagination() {
-      const totalPages = Math.ceil(totalRows / pageSize);
+      // 빈 테이블에서 'Page 1 of 0'로 표시되지 않도록 최소 1페이지로 보정(M-30)
+      const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
       const currentPage = Math.floor(currentOffset / pageSize) + 1;
       document.getElementById('pageInfo').textContent =
         'Page ' + currentPage + ' of ' + totalPages + ' (' + totalRows.toLocaleString() + ' rows)';
@@ -1131,7 +1198,7 @@ export class TableViewProvider {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = '${this.table}.csv';
+      a.download = ${csvName};
       a.click();
       URL.revokeObjectURL(url);
     }
@@ -1152,7 +1219,7 @@ export class TableViewProvider {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = '${this.table}.xls';
+      a.download = ${xlsName};
       a.click();
       URL.revokeObjectURL(url);
     }
@@ -1165,7 +1232,7 @@ export class TableViewProvider {
         });
         return obj;
       });
-      download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), '${this.table}.json');
+      download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), ${jsonName});
     }
 
     function exportMarkdown() {
@@ -1178,7 +1245,7 @@ export class TableViewProvider {
           return String(v).replace(/\\|/g, '\\\\|').replace(/\\n/g, ' ');
         }).join(' | ') + ' |\\n';
       });
-      download(new Blob([md], { type: 'text/markdown' }), '${this.table}.md');
+      download(new Blob([md], { type: 'text/markdown' }), ${mdName});
     }
 
     function download(blob, name) {
@@ -1262,7 +1329,12 @@ export class TableViewProvider {
     }
 
     function escapeCsv(str) {
-      if (str.includes(',') || str.includes('"') || str.includes('\\n')) {
+      str = String(str);
+      // CSV 수식 주입 방지: =, +, -, @, 탭, CR로 시작하면 작은따옴표로 무력화
+      if (/^[=+\\-@\\t\\r]/.test(str)) {
+        str = "'" + str;
+      }
+      if (str.includes(',') || str.includes('"') || str.includes('\\n') || str.includes('\\r')) {
         return '"' + str.replace(/"/g, '""') + '"';
       }
       return str;

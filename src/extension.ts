@@ -4,8 +4,106 @@ import { CredentialStore } from './storage/CredentialStore';
 import { TableViewProvider } from './webview/TableViewProvider';
 import { QueryResultProvider, QueryEditContext } from './webview/QueryResultProvider';
 import { parseSqlForEditability } from './sqlParser';
+import {
+  splitStatements,
+  statementAtOffset,
+  isPlainSelect,
+  hasLimitClause,
+} from './sqlStatements';
 import { showConnectionDialog } from './webview/ConnectionDialog';
 import { TableNode, SqlFileNode, SqlFileGroupNode } from './tree/TreeNodes';
+
+/** SELECT에 LIMIT이 없을 때 자동으로 부착하는 기본 행 수(대용량 결과로 인한 프리즈 방지). */
+const DEFAULT_ROW_LIMIT = 1000;
+
+type QueryManager = {
+  query(sql: string): Promise<any[]>;
+  getPrimaryKeys(database: string, table: string): Promise<string[]>;
+  database?: string;
+};
+
+type ShowResult = (
+  columns: string[],
+  rows: Record<string, any>[],
+  sql: string,
+  editContext?: QueryEditContext,
+  readonlyReason?: string,
+) => void;
+
+/**
+ * 문장 목록을 순차 실행한다. 행을 반환하는 마지막 문장은 결과 그리드로 표시하고,
+ * DML 문장은 영향받은 행 수를 알린다. SELECT에 LIMIT이 없으면 자동으로 부착한다.
+ */
+export async function executeStatements(
+  manager: QueryManager,
+  statements: { text: string }[],
+  defaultDatabase: string | undefined,
+  show: ShowResult,
+  notify: (message: string) => void = (m) => vscode.window.showInformationMessage(m),
+  rowLimit: number = DEFAULT_ROW_LIMIT,
+): Promise<void> {
+  let shownGrid = false;
+  const dmlMessages: string[] = [];
+  let sawEmptySelect = false;
+
+  for (const stmt of statements) {
+    const parsed = parseSqlForEditability(stmt.text);
+    let sqlToRun = stmt.text;
+    let limitApplied = false;
+    if (rowLimit > 0 && isPlainSelect(stmt.text) && !hasLimitClause(stmt.text)) {
+      sqlToRun = `${stmt.text}\nLIMIT ${rowLimit}`;
+      limitApplied = true;
+    }
+
+    const results = await manager.query(sqlToRun);
+
+    if (Array.isArray(results)) {
+      if (results.length > 0) {
+        const columns = Object.keys(results[0] as object);
+        let editContext: QueryEditContext | undefined;
+        if (parsed.editable && parsed.table) {
+          const pks = await manager.getPrimaryKeys(
+            parsed.database || defaultDatabase || '',
+            parsed.table,
+          );
+          if (pks.length > 0 && pks.every((pk) => columns.includes(pk))) {
+            editContext = {
+              manager,
+              database: parsed.database || defaultDatabase || '',
+              table: parsed.table,
+              primaryKeys: pks,
+            };
+          }
+        }
+        show(
+          columns,
+          results as Record<string, any>[],
+          limitApplied ? sqlToRun : stmt.text,
+          editContext,
+          parsed.editable ? undefined : parsed.reason,
+        );
+        shownGrid = true;
+      } else {
+        sawEmptySelect = true;
+      }
+    } else if (results && typeof results === 'object') {
+      const affected = (results as any).affectedRows;
+      if (typeof affected === 'number') {
+        dmlMessages.push(`${affected} row(s) affected`);
+      }
+    }
+  }
+
+  if (!shownGrid) {
+    if (dmlMessages.length > 0) {
+      notify(dmlMessages.join(', '));
+    } else if (sawEmptySelect) {
+      notify('Query executed. No rows returned.');
+    } else {
+      notify('Query executed.');
+    }
+  }
+}
 
 export function activate(context: vscode.ExtensionContext) {
   const treeProvider = new ConnectionTreeProvider(context);
@@ -14,9 +112,22 @@ export function activate(context: vscode.ExtensionContext) {
     treeDataProvider: treeProvider,
     showCollapseAll: true,
   });
+  context.subscriptions.push(treeView);
 
   const sqlStorage = treeProvider.getSqlStorage();
   const queryResultProvider = new QueryResultProvider(context.extensionUri);
+  const showResult = queryResultProvider.show.bind(queryResultProvider);
+
+  // Simple RDB가 관리하는 SQL 파일에서만 Cmd/Ctrl+Enter가 동작하도록 컨텍스트 키를 유지한다.
+  const updateManagedSqlContext = (editor: vscode.TextEditor | undefined) => {
+    const managed =
+      !!editor && sqlStorage.connectionIdFromPath(editor.document.uri.fsPath) !== null;
+    vscode.commands.executeCommand('setContext', 'simpleRdb.isManagedSqlFile', managed);
+  };
+  updateManagedSqlContext(vscode.window.activeTextEditor);
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(updateManagedSqlContext),
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('simple-rdb.addConnection', async () => {
@@ -34,10 +145,11 @@ export function activate(context: vscode.ExtensionContext) {
       if (!conn) {
         return;
       }
-      await treeProvider.disconnectFrom(id);
 
       const result = await showConnectionDialog(conn);
       if (result) {
+        // 저장이 확정된 경우에만 끊고 새 설정으로 갱신한다(취소/닫기 시 연결 유지).
+        await treeProvider.disconnectFrom(id);
         await CredentialStore.updateConnection(context, id, result);
         treeProvider.loadConnections();
       }
@@ -155,7 +267,7 @@ export function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand('simple-rdb.runSqlFile', async (node: SqlFileNode) => {
-      const manager = treeProvider.getActiveConnection(node.connectionId);
+      let manager = treeProvider.getActiveConnection(node.connectionId);
       if (!manager) {
         const connect = await vscode.window.showInformationMessage(
           'Not connected. Connect first?',
@@ -163,20 +275,28 @@ export function activate(context: vscode.ExtensionContext) {
         );
         if (connect) {
           await treeProvider.connectTo(node.connectionId);
+          manager = treeProvider.getActiveConnection(node.connectionId);
         }
-        return;
+        if (!manager) {
+          return;
+        }
       }
 
       const content = sqlStorage.getContent(node.connectionId, node.fileName);
-      if (!content.trim()) {
+      const statements = splitStatements(content);
+      if (statements.length === 0) {
         vscode.window.showWarningMessage('SQL file is empty.');
         return;
       }
 
       try {
-        const results = await manager.query(content);
-        vscode.window.showInformationMessage(
-          `Query executed. ${Array.isArray(results) ? results.length + ' row(s)' : 'OK'}`,
+        await executeStatements(
+          manager,
+          statements,
+          manager.database,
+          showResult,
+          undefined,
+          vscode.workspace.getConfiguration('simpleRdb').get('defaultLimit', DEFAULT_ROW_LIMIT),
         );
       } catch (err: any) {
         vscode.window.showErrorMessage(`Query failed: ${err.message}`);
@@ -207,51 +327,31 @@ export function activate(context: vscode.ExtensionContext) {
         }
       }
 
-      const sql = editor.selection.isEmpty
-        ? editor.document.getText()
-        : editor.document.getText(editor.selection);
+      // 선택 영역이 있으면 그 안의 문장들을, 없으면 커서가 위치한 문장 하나를 실행한다.
+      let statements;
+      if (!editor.selection.isEmpty) {
+        statements = splitStatements(editor.document.getText(editor.selection));
+      } else {
+        const all = splitStatements(editor.document.getText());
+        const offset = editor.document.offsetAt(editor.selection.active);
+        const stmt = statementAtOffset(all, offset);
+        statements = stmt ? [stmt] : [];
+      }
 
-      if (!sql.trim()) {
+      if (statements.length === 0) {
         vscode.window.showWarningMessage('No query to run.');
         return;
       }
 
       try {
-        const results = await manager.query(sql);
-        if (Array.isArray(results) && results.length > 0) {
-          const columns = Object.keys(results[0] as object);
-
-          let editContext: QueryEditContext | undefined;
-          const parsed = parseSqlForEditability(sql);
-          if (parsed.editable && parsed.table) {
-            const pks = await manager.getPrimaryKeys(
-              parsed.database || manager.database || '',
-              parsed.table,
-            );
-            if (pks.length > 0) {
-              const resultCols = new Set(columns);
-              const hasAllPks = pks.every((pk) => resultCols.has(pk));
-              if (hasAllPks) {
-                editContext = {
-                  manager,
-                  database: parsed.database || manager.database || '',
-                  table: parsed.table,
-                  primaryKeys: pks,
-                };
-              }
-            }
-          }
-
-          queryResultProvider.show(
-            columns,
-            results as Record<string, any>[],
-            sql,
-            editContext,
-            parsed.editable ? undefined : parsed.reason,
-          );
-        } else {
-          vscode.window.showInformationMessage('Query executed. No rows returned.');
-        }
+        await executeStatements(
+          manager,
+          statements,
+          manager.database,
+          showResult,
+          undefined,
+          vscode.workspace.getConfiguration('simpleRdb').get('defaultLimit', DEFAULT_ROW_LIMIT),
+        );
       } catch (err: any) {
         vscode.window.showErrorMessage(`Query failed: ${err.message}`);
       }

@@ -1,7 +1,7 @@
 {
   "name": "vscode-extension-simple-rdb",
   "displayName": "Simple RDB",
-  "description": "VSCode에서 MySQL 데이터베이스를 손쉽게 관리하는 확장",
+  "description": "Simple MySQL database management for VS Code — VSCode에서 MySQL 데이터베이스를 손쉽게 관리하는 확장",
   "version": "0.0.2",
   "publisher": "hail-kang",
   "license": "MIT",
@@ -13,7 +13,16 @@
     "url": "https://github.com/hail-kang/vscode-extension-simple-rdb.git"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "mysql",
+    "database",
+    "sql",
+    "db",
+    "rdb",
+    "query"
   ],
   "icon": "media/icon.png",
   "main": "./dist/extension.js",
@@ -39,53 +48,65 @@
       {
         "command": "simple-rdb.addConnection",
         "title": "Add Connection",
-        "icon": "$(add)"
+        "icon": "$(add)",
+        "category": "Simple RDB"
       },
       {
         "command": "simple-rdb.editConnection",
-        "title": "Edit Connection"
+        "title": "Edit Connection",
+        "category": "Simple RDB"
       },
       {
         "command": "simple-rdb.removeConnection",
-        "title": "Remove Connection"
+        "title": "Remove Connection",
+        "category": "Simple RDB"
       },
       {
         "command": "simple-rdb.connect",
-        "title": "Connect"
+        "title": "Connect",
+        "category": "Simple RDB"
       },
       {
         "command": "simple-rdb.disconnect",
-        "title": "Disconnect"
+        "title": "Disconnect",
+        "category": "Simple RDB"
       },
       {
         "command": "simple-rdb.refresh",
         "title": "Refresh",
-        "icon": "$(refresh)"
+        "icon": "$(refresh)",
+        "category": "Simple RDB"
       },
       {
         "command": "simple-rdb.openTable",
-        "title": "Open Table"
+        "title": "Open Table",
+        "category": "Simple RDB"
       },
       {
         "command": "simple-rdb.newSqlFile",
         "title": "New SQL File",
-        "icon": "$(new-file)"
+        "icon": "$(new-file)",
+        "category": "Simple RDB"
       },
       {
         "command": "simple-rdb.openSqlFile",
-        "title": "Open SQL File"
+        "title": "Open SQL File",
+        "category": "Simple RDB"
       },
       {
         "command": "simple-rdb.deleteSqlFile",
-        "title": "Delete SQL File"
+        "title": "Delete SQL File",
+        "category": "Simple RDB"
       },
       {
         "command": "simple-rdb.runSqlFile",
-        "title": "Run SQL File"
+        "title": "Run SQL File",
+        "category": "Simple RDB"
       },
       {
         "command": "simple-rdb.runQuery",
-        "title": "Run SQL Query"
+        "title": "Run SQL Query",
+        "category": "Simple RDB"
       }
     ],
     "menus": {
@@ -145,28 +166,99 @@
           "command": "simple-rdb.deleteSqlFile",
           "when": "view == simple-rdb-connections && viewItem == sqlFile"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "simple-rdb.connect",
+          "when": "false"
+        },
+        {
+          "command": "simple-rdb.disconnect",
+          "when": "false"
+        },
+        {
+          "command": "simple-rdb.editConnection",
+          "when": "false"
+        },
+        {
+          "command": "simple-rdb.removeConnection",
+          "when": "false"
+        },
+        {
+          "command": "simple-rdb.openTable",
+          "when": "false"
+        },
+        {
+          "command": "simple-rdb.openSqlFile",
+          "when": "false"
+        },
+        {
+          "command": "simple-rdb.deleteSqlFile",
+          "when": "false"
+        },
+        {
+          "command": "simple-rdb.runSqlFile",
+          "when": "false"
+        },
+        {
+          "command": "simple-rdb.runQuery",
+          "when": "editorLangId == sql"
+        }
       ]
     },
     "keybindings": [
       {
         "command": "simple-rdb.runQuery",
         "key": "cmd+enter",
-        "when": "editorLangId == sql"
+        "when": "editorLangId == sql && simpleRdb.isManagedSqlFile"
       },
       {
         "command": "simple-rdb.runQuery",
         "key": "ctrl+enter",
-        "when": "editorLangId == sql"
+        "when": "editorLangId == sql && simpleRdb.isManagedSqlFile"
       }
-    ]
+    ],
+    "viewsWelcome": [
+      {
+        "view": "simple-rdb-connections",
+        "contents": "아직 등록된 데이터베이스 연결이 없습니다.\n[Add Connection](command:simple-rdb.addConnection)"
+      }
+    ],
+    "configuration": {
+      "title": "Simple RDB",
+      "properties": {
+        "simpleRdb.pageSize": {
+          "type": "number",
+          "default": 100,
+          "minimum": 1,
+          "description": "테이블 뷰에서 한 페이지에 불러올 행 수"
+        },
+        "simpleRdb.defaultLimit": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 0,
+          "description": "LIMIT이 없는 SELECT에 자동으로 적용할 최대 행 수 (0이면 비활성화)"
+        },
+        "simpleRdb.maxBulkDelete": {
+          "type": "number",
+          "default": 100,
+          "minimum": 1,
+          "description": "한 번에 삭제할 수 있는 최대 행 수"
+        }
+      }
+    }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run check-types && npm run bundle",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "bundle": "node esbuild.mjs --production",
+    "check-types": "tsc --noEmit -p ./",
+    "watch": "node esbuild.mjs --watch",
+    "lint": "eslint src",
+    "test": "npm run compile && node --test \"dist/test/**/*.test.js\"",
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
-    "package": "npm run compile && vsce package"
+    "package": "npm run vscode:prepublish && vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
@@ -174,8 +266,10 @@
     "@types/vscode": "^1.80.0",
     "@vscode/vsce": "^3.9.1",
     "esbuild": "^0.28.0",
+    "eslint": "^9.39.5",
     "prettier": "^3.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.64.0"
   },
   "dependencies": {
     "mysql2": "^3.0.0",

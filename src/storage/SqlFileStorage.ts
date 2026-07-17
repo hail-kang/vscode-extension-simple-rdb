@@ -29,7 +29,17 @@ export class SqlFileStorage {
     }
   }
 
+  private sanitizeFileName(name: string): string {
+    // baseDir 밖으로 벗어나는 경로 구분자·상위 참조를 제거한다(경로 순회 방지)
+    const base = path.basename(name.trim());
+    if (!base || base === '.' || base === '..') {
+      throw new Error('올바르지 않은 파일 이름입니다.');
+    }
+    return base;
+  }
+
   async createSqlFile(connectionId: string, name: string): Promise<string> {
+    name = this.sanitizeFileName(name);
     if (!name.endsWith('.sql')) {
       name += '.sql';
     }

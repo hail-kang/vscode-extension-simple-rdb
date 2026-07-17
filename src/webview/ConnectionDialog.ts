@@ -4,20 +4,19 @@ import { StoredConnection } from '../storage/CredentialStore';
 export async function showConnectionDialog(
   existing?: StoredConnection,
 ): Promise<StoredConnection | undefined> {
-  const configs = vscode.workspace.getConfiguration('simpleRdb');
-  const validateName = (name: string) => name.trim().length > 0;
-
   let name = '';
   let host = '127.0.0.1';
   let port = '3306';
   let user = 'root';
-  let password = '';
+  // 비밀번호류는 편집 시에도 폼 HTML에 평문으로 넣지 않는다(L-3). 저장 시 비어 있으면 기존 값 유지.
+  const password = '';
   let database = '';
   let sshEnabled = false;
   let sshHost = '';
   let sshPort = '22';
   let sshUser = '';
-  let sshPassword = '';
+  const sshPassword = '';
+  const sshPassphrase = '';
   let sshKeyPath = '';
 
   if (existing) {
@@ -25,14 +24,13 @@ export async function showConnectionDialog(
     host = existing.host;
     port = String(existing.port);
     user = existing.user;
-    password = existing.password;
     database = existing.database || '';
     if (existing.ssh) {
       sshEnabled = true;
       sshHost = existing.ssh.host;
       sshPort = String(existing.ssh.port);
       sshUser = existing.ssh.username;
-      sshPassword = existing.ssh.password || '';
+      sshKeyPath = existing.ssh.privateKeyPath || '';
     }
   }
 
@@ -58,12 +56,26 @@ export async function showConnectionDialog(
     sshPort,
     sshUser,
     sshPassword,
+    sshPassphrase,
     sshKeyPath,
   };
 
-  panel.webview.html = getConnectionHtml(fillData, existing ? existing.id : undefined);
+  panel.webview.html = getConnectionHtml(
+    fillData,
+    panel.webview.cspSource,
+    existing ? existing.id : undefined,
+  );
 
   return new Promise<StoredConnection | undefined>((resolve) => {
+    let settled = false;
+    const finish = (value: StoredConnection | undefined) => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
+    // 탭 X로 닫으면(패널 dispose) 취소로 처리 — 그렇지 않으면 Promise가 영구 미해결된다.
+    panel.onDidDispose(() => finish(undefined));
     panel.webview.onDidReceiveMessage(
       async (message) => {
         switch (message.type) {
@@ -75,7 +87,8 @@ export async function showConnectionDialog(
               host: data.host.trim(),
               port: parseInt(data.port, 10) || 3306,
               user: data.user.trim(),
-              password: data.password,
+              // 비어 있으면 기존 비밀번호 유지(L-3)
+              password: data.password !== '' ? data.password : (existing?.password ?? ''),
               database: data.database.trim() || undefined,
             };
 
@@ -85,21 +98,28 @@ export async function showConnectionDialog(
                 port: parseInt(data.sshPort, 10) || 22,
                 username: data.sshUser.trim(),
               };
-              if (data.sshPassword) {
-                conn.ssh.password = data.sshPassword;
+              const sshPw =
+                data.sshPassword !== '' ? data.sshPassword : existing?.ssh?.password;
+              if (sshPw) {
+                conn.ssh.password = sshPw;
               }
-              if (data.sshKeyPath) {
-                conn.ssh.privateKey = data.sshKeyPath;
+              if (data.sshKeyPath.trim()) {
+                conn.ssh.privateKeyPath = data.sshKeyPath.trim();
+              }
+              const sshPp =
+                data.sshPassphrase !== '' ? data.sshPassphrase : existing?.ssh?.passphrase;
+              if (sshPp) {
+                conn.ssh.passphrase = sshPp;
               }
             }
 
+            finish(conn);
             panel.dispose();
-            resolve(conn);
             break;
           }
           case 'cancel':
+            finish(undefined);
             panel.dispose();
-            resolve(undefined);
             break;
         }
       },
@@ -109,11 +129,13 @@ export async function showConnectionDialog(
   });
 }
 
-function getConnectionHtml(data: any, existingId?: string): string {
+function getConnectionHtml(data: any, cspSource: string, existingId?: string): string {
+  const pwPlaceholder = existingId ? '변경하려면 입력 (비우면 기존 값 유지)' : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'unsafe-inline'; connect-src 'none';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${existingId ? 'Edit Connection' : 'Add Connection'}</title>
   <style>
@@ -227,7 +249,7 @@ function getConnectionHtml(data: any, existingId?: string): string {
     </div>
     <div class="form-group">
       <label for="password">Password</label>
-      <input type="password" id="password" value="${escapeAttr(data.password)}">
+      <input type="password" id="password" value="" placeholder="${escapeAttr(pwPlaceholder)}">
     </div>
     <div class="form-group">
       <label for="database">Default Database (optional)</label>
@@ -256,11 +278,15 @@ function getConnectionHtml(data: any, existingId?: string): string {
       </div>
       <div class="form-group">
         <label for="sshPassword">SSH Password</label>
-        <input type="password" id="sshPassword" value="${escapeAttr(data.sshPassword)}">
+        <input type="password" id="sshPassword" value="" placeholder="${escapeAttr(pwPlaceholder)}">
       </div>
       <div class="form-group">
         <label for="sshKeyPath">SSH Private Key Path</label>
         <input type="text" id="sshKeyPath" value="${escapeAttr(data.sshKeyPath)}" placeholder="/home/user/.ssh/id_rsa">
+      </div>
+      <div class="form-group">
+        <label for="sshPassphrase">SSH Key Passphrase</label>
+        <input type="password" id="sshPassphrase" value="" placeholder="${escapeAttr(pwPlaceholder)}">
       </div>
     </div>
 
@@ -291,6 +317,7 @@ function getConnectionHtml(data: any, existingId?: string): string {
         sshPort: document.getElementById('sshPort').value,
         sshUser: document.getElementById('sshUser').value,
         sshPassword: document.getElementById('sshPassword').value,
+        sshPassphrase: document.getElementById('sshPassphrase').value,
         sshKeyPath: document.getElementById('sshKeyPath').value,
       };
       vscode.postMessage({ type: 'save', data });
