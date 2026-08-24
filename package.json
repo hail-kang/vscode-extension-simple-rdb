@@ -2,7 +2,7 @@
   "name": "vscode-extension-simple-rdb",
   "displayName": "Simple RDB",
   "description": "Simple MySQL database management for VS Code — VSCode에서 MySQL 데이터베이스를 손쉽게 관리하는 확장",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "hail-kang",
   "license": "MIT",
   "engines": {
