@@ -103,7 +103,7 @@ export class TableViewProvider {
             }
             this.postMessage({
               type: 'deleteSuccess',
-              indices: message.targets.map((t: any) => t.index)
+              indices: message.targets.map((t: any) => t.index),
             });
           }
           break;

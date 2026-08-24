@@ -4,12 +4,7 @@ import { CredentialStore } from './storage/CredentialStore';
 import { TableViewProvider } from './webview/TableViewProvider';
 import { QueryResultProvider, QueryEditContext } from './webview/QueryResultProvider';
 import { parseSqlForEditability } from './sqlParser';
-import {
-  splitStatements,
-  statementAtOffset,
-  isPlainSelect,
-  hasLimitClause,
-} from './sqlStatements';
+import { splitStatements, statementAtOffset, isPlainSelect, hasLimitClause } from './sqlStatements';
 import { showConnectionDialog } from './webview/ConnectionDialog';
 import { TableNode, SqlFileNode, SqlFileGroupNode } from './tree/TreeNodes';
 
@@ -125,9 +120,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.executeCommand('setContext', 'simpleRdb.isManagedSqlFile', managed);
   };
   updateManagedSqlContext(vscode.window.activeTextEditor);
-  context.subscriptions.push(
-    vscode.window.onDidChangeActiveTextEditor(updateManagedSqlContext),
-  );
+  context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(updateManagedSqlContext));
 
   context.subscriptions.push(
     vscode.commands.registerCommand('simple-rdb.addConnection', async () => {

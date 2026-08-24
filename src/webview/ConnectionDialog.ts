@@ -98,8 +98,7 @@ export async function showConnectionDialog(
                 port: parseInt(data.sshPort, 10) || 22,
                 username: data.sshUser.trim(),
               };
-              const sshPw =
-                data.sshPassword !== '' ? data.sshPassword : existing?.ssh?.password;
+              const sshPw = data.sshPassword !== '' ? data.sshPassword : existing?.ssh?.password;
               if (sshPw) {
                 conn.ssh.password = sshPw;
               }

@@ -96,7 +96,8 @@ function findKeyword(upper: string, keyword: string, startFrom = 0): number {
 
 function isKeyword(str: string, idx: number, keyword: string): boolean {
   const before = idx === 0 || /\s|\(|,/.test(str[idx - 1]);
-  const after = idx + keyword.length >= str.length || /\s|\(|;|\n|,/.test(str[idx + keyword.length]);
+  const after =
+    idx + keyword.length >= str.length || /\s|\(|;|\n|,/.test(str[idx + keyword.length]);
   return before && after;
 }
 

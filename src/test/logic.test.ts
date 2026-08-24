@@ -12,7 +12,7 @@ import { toDisplayValue, formatDateTime } from '../utils';
 import { toSafeJson, escapeHtml } from '../webview/webviewSecurity';
 
 test('maskLiteralsAndComments preserves length', () => {
-  for (const s of ["SELECT 1", "a '/*' b -- x\n c", '`a;b` /* c;d */ e']) {
+  for (const s of ['SELECT 1', "a '/*' b -- x\n c", '`a;b` /* c;d */ e']) {
     assert.equal(maskLiteralsAndComments(s).length, s.length);
   }
 });
@@ -102,7 +102,10 @@ test('toSafeJson neutralizes </script> breakout', () => {
   const s = toSafeJson([{ note: '</script><script>alert(1)</script>' }]);
   assert.equal(s.includes('</script>'), false);
   const restored = JSON.parse(
-    s.replace(/\\u003c/g, '<').replace(/\\u003e/g, '>').replace(/\\u0026/g, '&'),
+    s
+      .replace(/\\u003c/g, '<')
+      .replace(/\\u003e/g, '>')
+      .replace(/\\u0026/g, '&'),
   );
   assert.equal(restored[0].note, '</script><script>alert(1)</script>');
 });

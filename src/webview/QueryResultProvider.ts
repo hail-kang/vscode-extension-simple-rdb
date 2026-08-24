@@ -82,9 +82,9 @@ export class QueryResultProvider {
                   target.primaryKeys,
                 );
               }
-              this.panel?.webview.postMessage({ 
-                type: 'deleteSuccess', 
-                indices: message.targets.map((t: any) => t.index) 
+              this.panel?.webview.postMessage({
+                type: 'deleteSuccess',
+                indices: message.targets.map((t: any) => t.index),
               });
             }
             break;
