@@ -3,6 +3,32 @@ import * as esbuild from 'esbuild';
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
 
+/**
+ * watch 모드에서 빌드 시작/완료 마커를 출력한다. VS Code의 백그라운드 problem matcher가
+ * 이 마커(beginsPattern/endsPattern)로 "번들 준비 완료"를 감지해 F5 실행을 시작한다.
+ */
+const watchStatusPlugin = {
+  name: 'watch-status',
+  setup(build) {
+    build.onStart(() => {
+      if (watch) {
+        console.log('[watch] build started');
+      }
+    });
+    build.onEnd((result) => {
+      for (const { text, location } of result.errors) {
+        console.error(`✘ [ERROR] ${text}`);
+        if (location) {
+          console.error(`    ${location.file}:${location.line}:${location.column}:`);
+        }
+      }
+      if (watch) {
+        console.log('[watch] build finished');
+      }
+    });
+  },
+};
+
 async function main() {
   const ctx = await esbuild.context({
     entryPoints: ['src/extension.ts'],
@@ -16,7 +42,8 @@ async function main() {
     external: ['vscode', '*.node'],
     sourcemap: !production,
     minify: production,
-    logLevel: 'info',
+    logLevel: 'silent',
+    plugins: [watchStatusPlugin],
   });
   if (watch) {
     await ctx.watch();

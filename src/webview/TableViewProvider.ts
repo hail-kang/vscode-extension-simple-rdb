@@ -508,6 +508,10 @@ export class TableViewProvider {
     let insertedRows = new Set();
     let selectedRows = new Set();
     let anchorRow = null;
+    // 다중 셀 선택: 키는 "rowIndex#colIdx"(rowIndex는 insert 시 음수 가능). colName의 ':' 충돌을 피해 '#' 사용.
+    let selectedCells = new Set();
+    let cellAnchor = null; // { rowIndex, colIdx } - 범위 선택/붙여넣기 기준점
+    let isDragging = false;
 
     window.addEventListener('message', (e) => {
       const msg = e.data;
@@ -534,6 +538,7 @@ export class TableViewProvider {
           insertedRows.clear();
           selectedRows.clear();
           anchorRow = null;
+          clearCellSelection();
           updatePendingUI();
           refreshData();
           break;
@@ -662,15 +667,40 @@ export class TableViewProvider {
           if (isInserted) {
             td.classList.add('modified');
           }
+          if (selectedCells.has(row._rowIndex + '#' + colIdx)) {
+            td.classList.add('selected');
+          }
 
           td.dataset.colIndex = colIdx;
           td.dataset.rowIndex = row._rowIndex;
           td.dataset.colName = col.name;
 
-          td.addEventListener('click', (e) => selectCell(td, row, col, colIdx, e));
+          td.addEventListener('mousedown', (e) => {
+            if (e.button !== 0 || td.classList.contains('editing')) return;
+            if (e.shiftKey) {
+              selectCellRangeTo(row._rowIndex, colIdx);
+            } else if (e.ctrlKey || e.metaKey) {
+              toggleCell(row, colIdx);
+            } else {
+              selectSingleCell(row, colIdx);
+              isDragging = true;
+            }
+            applyCellSelectionClasses();
+            e.preventDefault();
+          });
+          td.addEventListener('mouseover', () => {
+            if (isDragging) {
+              selectCellRangeTo(row._rowIndex, colIdx);
+              applyCellSelectionClasses();
+            }
+          });
           td.addEventListener('dblclick', () => startEdit(td, row, col));
           td.addEventListener('contextmenu', (e) => {
             e.preventDefault();
+            if (!selectedCells.has(row._rowIndex + '#' + colIdx)) {
+              selectSingleCell(row, colIdx);
+              applyCellSelectionClasses();
+            }
             showContextMenu(e, row, col, colIdx);
           });
 
@@ -681,10 +711,59 @@ export class TableViewProvider {
       });
     }
 
-    function selectCell(td, row, col, colIdx, event) {
-      document.querySelectorAll('td.selected:not(.row-num)').forEach(el => el.classList.remove('selected'));
-      td.classList.add('selected');
-      selectedCell = { td, row, col, colIdx };
+    function cellKeyOf(rowIndex, colIdx) {
+      return rowIndex + '#' + colIdx;
+    }
+
+    function applyCellSelectionClasses() {
+      document.querySelectorAll('#tableBody td.selected:not(.row-num)').forEach((el) => el.classList.remove('selected'));
+      document.querySelectorAll('#tableBody td[data-col-index]').forEach((td) => {
+        if (selectedCells.has(td.dataset.rowIndex + '#' + td.dataset.colIndex)) {
+          td.classList.add('selected');
+        }
+      });
+    }
+
+    function selectSingleCell(row, colIdx) {
+      selectedCells.clear();
+      selectedCells.add(cellKeyOf(row._rowIndex, colIdx));
+      cellAnchor = { rowIndex: row._rowIndex, colIdx };
+      selectedCell = { row, col: columns[colIdx], colIdx };
+    }
+
+    function toggleCell(row, colIdx) {
+      const key = cellKeyOf(row._rowIndex, colIdx);
+      if (selectedCells.has(key)) {
+        selectedCells.delete(key);
+      } else {
+        selectedCells.add(key);
+      }
+      cellAnchor = { rowIndex: row._rowIndex, colIdx };
+      selectedCell = { row, col: columns[colIdx], colIdx };
+    }
+
+    function selectCellRangeTo(rowIndex, colIdx) {
+      if (!cellAnchor) {
+        cellAnchor = { rowIndex, colIdx };
+      }
+      const posOf = (ri) => rows.findIndex((r) => r._rowIndex === ri);
+      const ra = posOf(cellAnchor.rowIndex);
+      const rb = posOf(rowIndex);
+      if (ra < 0 || rb < 0) return;
+      const rlo = Math.min(ra, rb), rhi = Math.max(ra, rb);
+      const clo = Math.min(cellAnchor.colIdx, colIdx), chi = Math.max(cellAnchor.colIdx, colIdx);
+      selectedCells.clear();
+      for (let r = rlo; r <= rhi; r++) {
+        for (let c = clo; c <= chi; c++) {
+          selectedCells.add(cellKeyOf(rows[r]._rowIndex, c));
+        }
+      }
+    }
+
+    function clearCellSelection() {
+      selectedCells.clear();
+      cellAnchor = null;
+      selectedCell = null;
     }
 
     function toggleRowSelection(rowIndex, event) {
@@ -705,9 +784,15 @@ export class TableViewProvider {
           anchorRow = rowIndex;
         }
       } else {
+        // 이미 이 행만 선택돼 있으면 다시 클릭 시 해제(토글)한다.
+        const wasOnlySelected = selectedRows.size === 1 && selectedRows.has(rowIndex);
         selectedRows.clear();
-        selectedRows.add(rowIndex);
-        anchorRow = rowIndex;
+        if (wasOnlySelected) {
+          anchorRow = null;
+        } else {
+          selectedRows.add(rowIndex);
+          anchorRow = rowIndex;
+        }
       }
       renderRows();
     }
@@ -990,6 +1075,127 @@ export class TableViewProvider {
       navigator.clipboard.writeText(value === null ? 'NULL' : String(value));
     }
 
+    /** 셀 값 하나를 편집 버퍼(pending)에 반영한다. 값이 실제로 바뀌었으면 true. */
+    function commitCellValue(row, col, newValue) {
+      if (col.readonly) return false;
+      const oldValue = row[col.name];
+      if (oldValue === null && newValue === null) return false;
+      if (oldValue !== null && newValue !== null && String(oldValue) === String(newValue)) return false;
+
+      row[col.name] = newValue;
+      modifiedCells.add(row._rowIndex + ':' + col.name);
+
+      if (insertedRows.has(row._rowIndex)) {
+        const insIdx = pendingInserts.findIndex((p) => p._rowIndex === row._rowIndex);
+        if (insIdx >= 0) {
+          if (newValue === null) {
+            delete pendingInserts[insIdx].values[col.name];
+          } else {
+            pendingInserts[insIdx].values[col.name] = newValue;
+          }
+        }
+      } else {
+        const changeKey = JSON.stringify(getPrimaryKeys(row));
+        if (!pendingChanges.has(changeKey)) {
+          pendingChanges.set(changeKey, { primaryKeys: getPrimaryKeys(row), updates: {} });
+        }
+        pendingChanges.get(changeKey).updates[col.name] = newValue;
+      }
+      return true;
+    }
+
+    /** 클립보드 텍스트를 2차원 배열로. 개행=행, 탭=열. */
+    function parseClipboardGrid(text) {
+      const normalized = String(text)
+        .replace(/\\r\\n/g, '\\n')
+        .replace(/\\r/g, '\\n')
+        .replace(/\\n$/, '');
+      return normalized.split('\\n').map((line) => line.split('\\t'));
+    }
+
+    async function pasteFromClipboard() {
+      let text;
+      try {
+        text = await navigator.clipboard.readText();
+      } catch {
+        vscode.postMessage({ type: 'error', message: '클립보드를 읽을 수 없습니다.' });
+        return;
+      }
+      if (text === '' || text == null) return;
+      if (selectedCells.size === 0) return;
+
+      const grid = parseClipboardGrid(text);
+      const isSingle = grid.length === 1 && grid[0].length === 1;
+      let changed = false;
+
+      if (isSingle) {
+        // 단일 값: 선택된 모든 셀에 동일하게 채운다.
+        const val = grid[0][0];
+        for (const key of selectedCells) {
+          const [riStr, ciStr] = key.split('#');
+          const row = rows.find((r) => r._rowIndex === Number(riStr));
+          const col = columns[Number(ciStr)];
+          if (row && col && commitCellValue(row, col, val)) changed = true;
+        }
+      } else {
+        // 블록: 선택 영역의 좌상단을 기준으로 행/열 방향으로 붙여넣는다.
+        let minPos = Infinity, minCol = Infinity;
+        for (const key of selectedCells) {
+          const [riStr, ciStr] = key.split('#');
+          const pos = rows.findIndex((r) => r._rowIndex === Number(riStr));
+          if (pos >= 0 && pos < minPos) minPos = pos;
+          const c = Number(ciStr);
+          if (c < minCol) minCol = c;
+        }
+        if (!isFinite(minPos) || !isFinite(minCol)) return;
+        const affected = [];
+        for (let ri = 0; ri < grid.length; ri++) {
+          for (let ci = 0; ci < grid[ri].length; ci++) {
+            const pos = minPos + ri;
+            const colIdx = minCol + ci;
+            if (pos >= rows.length || colIdx >= columns.length) continue;
+            const row = rows[pos];
+            const col = columns[colIdx];
+            if (commitCellValue(row, col, grid[ri][ci])) changed = true;
+            affected.push(cellKeyOf(row._rowIndex, colIdx));
+          }
+        }
+        selectedCells = new Set(affected);
+      }
+
+      if (changed) updatePendingUI();
+      renderRows();
+      applyCellSelectionClasses();
+    }
+
+    /** 선택 셀들을 TSV로 클립보드에 복사(엑셀/그리드 호환). */
+    function copySelectedCells() {
+      const withPos = [...selectedCells]
+        .map((k) => k.split('#').map(Number))
+        .map(([ri, ci]) => [rows.findIndex((r) => r._rowIndex === ri), ci])
+        .filter(([p]) => p >= 0);
+      if (withPos.length === 0) return;
+      const minR = Math.min(...withPos.map((s) => s[0]));
+      const maxR = Math.max(...withPos.map((s) => s[0]));
+      const minC = Math.min(...withPos.map((s) => s[1]));
+      const maxC = Math.max(...withPos.map((s) => s[1]));
+      const has = new Set(withPos.map(([p, c]) => p + '#' + c));
+      let tsv = '';
+      for (let r = minR; r <= maxR; r++) {
+        const line = [];
+        for (let c = minC; c <= maxC; c++) {
+          let v = '';
+          if (has.has(r + '#' + c)) {
+            const val = rows[r][columns[c].name];
+            v = val === null ? 'NULL' : String(val);
+          }
+          line.push(v.includes('\\t') || v.includes('\\n') ? '"' + v.replace(/"/g, '""') + '"' : v);
+        }
+        tsv += line.join('\\t') + (r < maxR ? '\\n' : '');
+      }
+      navigator.clipboard.writeText(tsv);
+    }
+
     function commitChanges() {
       const pendingDeletesCount = pendingDeletes.size;
       if (pendingDeletesCount > 100) {
@@ -1047,6 +1253,7 @@ export class TableViewProvider {
       insertedRows.clear();
       selectedRows.clear();
       anchorRow = null;
+      clearCellSelection();
       updatePendingUI();
       refreshData();
     }
@@ -1068,6 +1275,10 @@ export class TableViewProvider {
         }
         addSeparator(menu);
         addMenuItem(menu, 'Copy Value', () => copyValue());
+        if (selectedCells.size > 1) {
+          addMenuItem(menu, 'Copy Cells (' + selectedCells.size + ')', () => copySelectedCells());
+        }
+        addMenuItem(menu, 'Paste', () => pasteFromClipboard());
         addSeparator(menu);
         addSubMenuItem(menu, 'Advanced Copy', [
           { label: 'Copy as CSV', action: () => copyAsCSV() },
@@ -1359,12 +1570,34 @@ export class TableViewProvider {
         pad(d.getSeconds());
     }
 
+    document.addEventListener('mouseup', () => {
+      isDragging = false;
+    });
+
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Delete' && !document.querySelector('td.editing')) {
+      const editing = !!document.querySelector('td.editing');
+      if (e.key === 'Delete' && !editing) {
         deleteSelectedRows();
       }
-      if (e.key === 'Enter' && selectedCell) {
-        startEdit(selectedCell.td, selectedCell.row, selectedCell.col);
+      if (e.key === 'Escape' && !editing && (selectedCells.size > 0 || selectedRows.size > 0)) {
+        clearCellSelection();
+        selectedRows.clear();
+        anchorRow = null;
+        renderRows();
+      }
+      if (e.key === 'Enter' && !editing && selectedCell) {
+        const td = document.querySelector(
+          '#tableBody td[data-row-index="' + selectedCell.row._rowIndex + '"][data-col-index="' + selectedCell.colIdx + '"]',
+        );
+        if (td) startEdit(td, selectedCell.row, selectedCell.col);
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && !editing && selectedCells.size > 0) {
+        e.preventDefault();
+        copySelectedCells();
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V') && !editing && selectedCells.size > 0) {
+        e.preventDefault();
+        pasteFromClipboard();
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();

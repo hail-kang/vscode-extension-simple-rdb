@@ -496,6 +496,7 @@ export class QueryResultProvider {
     let selectedCells = new Set();
     let anchorCell = null;
     let anchorRowIdx = null;
+    let isDragging = false;
     let contextRow = null;
     let contextColIndex = null;
 
@@ -581,14 +582,28 @@ export class QueryResultProvider {
           if (modifiedCells.has(cellKey)) td.classList.add('modified');
           if (selectedCells.has(idx + ':' + colIdx)) td.classList.add('selected');
 
-          td.addEventListener('click', (e) => {
+          td.addEventListener('mousedown', (e) => {
+            if (e.button !== 0 || td.classList.contains('editing')) return;
             if (e.shiftKey && anchorCell) {
               selectRange(anchorCell.row, anchorCell.col, idx, colIdx);
+            } else if (e.ctrlKey || e.metaKey) {
+              const k = idx + ':' + colIdx;
+              if (selectedCells.has(k)) selectedCells.delete(k);
+              else selectedCells.add(k);
+              anchorCell = { row: idx, col: colIdx };
+              reapplySelection();
             } else {
               selectedCells.clear();
               selectedCells.add(idx + ':' + colIdx);
               anchorCell = { row: idx, col: colIdx };
+              isDragging = true;
               reapplySelection();
+            }
+            e.preventDefault();
+          });
+          td.addEventListener('mouseover', () => {
+            if (isDragging && anchorCell) {
+              selectRange(anchorCell.row, anchorCell.col, idx, colIdx);
             }
           });
 
@@ -636,9 +651,15 @@ export class QueryResultProvider {
           anchorRowIdx = idx;
         }
       } else {
+        // 이미 이 행만 선택돼 있으면 다시 클릭 시 해제(토글)한다.
+        const wasOnlySelected = selectedRows.size === 1 && selectedRows.has(idx);
         selectedRows.clear();
-        selectedRows.add(idx);
-        anchorRowIdx = idx;
+        if (wasOnlySelected) {
+          anchorRowIdx = null;
+        } else {
+          selectedRows.add(idx);
+          anchorRowIdx = idx;
+        }
       }
       renderRows();
     }
@@ -695,6 +716,7 @@ export class QueryResultProvider {
         if (colIdx !== null) {
           addSeparator(menu);
           addMenuItem(menu, 'Set NULL', () => setNull());
+          addMenuItem(menu, 'Paste', () => pasteFromClipboard());
         }
         addSeparator(menu);
         addMenuItem(menu, 'Delete Row', () => deleteSelected(), 'danger');
@@ -879,13 +901,27 @@ export class QueryResultProvider {
 
     ${editableJs}
 
+    document.addEventListener('mouseup', () => {
+      isDragging = false;
+    });
+
     document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !document.querySelector('td.editing') && (selectedCells.size > 0 || selectedRows.size > 0)) {
+        selectedCells.clear();
+        anchorCell = null;
+        selectedRows.clear();
+        anchorRowIdx = null;
+        renderRows();
+        return;
+      }
+      const editing = !!document.querySelector('td.editing');
       if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-        if (selectedCells.size === 0) return;
+        if (editing || selectedCells.size === 0) return;
         copySelected();
         return;
       }
       if (${editable} && (e.ctrlKey || e.metaKey) && e.key === 'v') {
+        if (editing || selectedCells.size === 0) return;
         e.preventDefault();
         pasteFromClipboard();
         return;
@@ -922,42 +958,61 @@ export class QueryResultProvider {
       navigator.clipboard.writeText(tsv);
     }
 
+    function applyPasteValue(r, c, newVal) {
+      const col = columns[c];
+      const oldVal = rows[r][col];
+      if (String(oldVal) === String(newVal)) return;
+      rows[r][col] = newVal;
+      modifiedCells.add(r + ':' + col);
+      const pkObj = getOriginalPk(r);
+      const key = JSON.stringify(pkObj);
+      if (!pendingChanges.has(key)) {
+        pendingChanges.set(key, { primaryKeys: pkObj, updates: { [col]: newVal } });
+      } else {
+        pendingChanges.get(key).updates[col] = newVal;
+      }
+    }
+
     async function pasteFromClipboard() {
       try {
         const text = await navigator.clipboard.readText();
-        if (!text) return;
+        if (text === '' || text == null) return;
         const lines = parseTSV(text);
         if (lines.length === 0) return;
-        const sorted = [...selectedCells].map((k) => k.split(':').map(Number));
-        if (sorted.length === 0) return;
-        sorted.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+        const cells = [...selectedCells].map((k) => k.split(':').map(Number));
+        if (cells.length === 0) return;
 
-        let startR = sorted[0][0];
-        let startC = sorted[0][1];
-        for (let ri = 0; ri < lines.length; ri++) {
-          for (let ci = 0; ci < lines[ri].length; ci++) {
-            const r = startR + ri;
-            const c = startC + ci;
-            if (r >= rows.length || c >= columns.length) continue;
-            const col = columns[c];
-            const oldVal = rows[r][col];
-            const newVal = lines[ri][ci];
-            if (String(oldVal) !== String(newVal)) {
-              rows[r][col] = newVal;
-              modifiedCells.add(r + ':' + col);
-              const pkObj = getOriginalPk(r);
-              const key = JSON.stringify(pkObj);
-              if (!pendingChanges.has(key)) {
-                pendingChanges.set(key, { primaryKeys: pkObj, updates: { [col]: newVal } });
-              } else {
-                pendingChanges.get(key).updates[col] = newVal;
-              }
+        const isSingle = lines.length === 1 && lines[0].length === 1;
+        let restore;
+        if (isSingle) {
+          // 단일 값: 선택된 모든 셀에 동일하게 채운다.
+          const val = lines[0][0];
+          cells.forEach(([r, c]) => {
+            if (r < rows.length && c < columns.length) applyPasteValue(r, c, val);
+          });
+          restore = cells.slice();
+        } else {
+          // 블록: 선택 영역의 좌상단부터 행/열 방향으로 붙여넣는다.
+          cells.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+          const startR = cells[0][0];
+          const startC = cells[0][1];
+          restore = [];
+          for (let ri = 0; ri < lines.length; ri++) {
+            for (let ci = 0; ci < lines[ri].length; ci++) {
+              const r = startR + ri;
+              const c = startC + ci;
+              if (r >= rows.length || c >= columns.length) continue;
+              applyPasteValue(r, c, lines[ri][ci]);
+              restore.push([r, c]);
             }
           }
         }
         updatePendingUI();
         renderRows();
-        selectRange(startR, startC, startR + lines.length - 1, startC + lines[0].length - 1);
+        // renderRows가 selectedCells를 비우므로 붙여넣은 영역을 다시 선택 표시한다.
+        selectedCells = new Set(restore.map(([r, c]) => r + ':' + c));
+        anchorCell = restore.length ? { row: restore[0][0], col: restore[0][1] } : null;
+        reapplySelection();
       } catch {}
     }
 
