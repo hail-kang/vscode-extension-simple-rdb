@@ -26,6 +26,9 @@
   ],
   "icon": "media/icon.png",
   "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:sql"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [

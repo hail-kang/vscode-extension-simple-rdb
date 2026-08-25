@@ -8,6 +8,7 @@ import {
   isPlainSelect,
 } from '../sqlStatements';
 import { parseSqlForEditability } from '../sqlParser';
+import { completionContextAt } from '../sqlCompletionContext';
 import { toDisplayValue, formatDateTime } from '../utils';
 import { toSafeJson, escapeHtml } from '../webview/webviewSecurity';
 
@@ -112,4 +113,127 @@ test('toSafeJson neutralizes </script> breakout', () => {
 
 test('escapeHtml escapes angle brackets and quotes', () => {
   assert.equal(escapeHtml('<b title="x">'), '&lt;b title=&quot;x&quot;&gt;');
+});
+
+/** '|' 위치를 커서로 간주해 자동완성 문맥을 계산한다. */
+function ctxOf(sql: string): ReturnType<typeof completionContextAt> {
+  const off = sql.indexOf('|');
+  assert.ok(off >= 0, 'cursor marker | required');
+  return completionContextAt(sql.slice(0, off) + sql.slice(off + 1), off);
+}
+
+test('completion: table context after FROM/JOIN/UPDATE', () => {
+  const c1 = ctxOf('SELECT * FROM |');
+  assert.equal(c1.kind, 'table');
+  assert.equal(c1.prefix, '');
+
+  const c2 = ctxOf('SELECT * FROM users|');
+  assert.equal(c2.kind, 'table');
+  assert.equal(c2.prefix, 'users');
+
+  const c3 = ctxOf('SELECT * FROM users u JOIN |');
+  assert.equal(c3.kind, 'table');
+
+  const c4 = ctxOf('UPDATE users SET a = 1 WHERE id = 2; DELETE FROM or|');
+  assert.equal(c4.kind, 'table');
+  assert.equal(c4.prefix, 'or');
+});
+
+test('completion: qualified table (db.) context', () => {
+  const c1 = ctxOf('SELECT * FROM mydb.|');
+  assert.equal(c1.kind, 'table');
+  assert.equal(c1.database, 'mydb');
+  assert.equal(c1.prefix, '');
+  assert.equal(c1.prefixStart, 'SELECT * FROM mydb.'.length);
+
+  const c2 = ctxOf('SELECT * FROM mydb.us|');
+  assert.equal(c2.kind, 'table');
+  assert.equal(c2.database, 'mydb');
+  assert.equal(c2.prefix, 'us');
+});
+
+test('completion: column context in SELECT/WHERE/ORDER BY/SET', () => {
+  const c1 = ctxOf('SELECT na| FROM users');
+  assert.equal(c1.kind, 'column');
+  assert.equal(c1.prefix, 'na');
+  assert.equal(c1.tables.length, 1);
+  assert.equal(c1.tables[0].table, 'users');
+
+  const c2 = ctxOf('SELECT * FROM users WHERE |');
+  assert.equal(c2.kind, 'column');
+
+  const c3 = ctxOf('SELECT * FROM users ORDER BY cre|');
+  assert.equal(c3.kind, 'column');
+  assert.equal(c3.prefix, 'cre');
+
+  const c4 = ctxOf('UPDATE t SET na|');
+  assert.equal(c4.kind, 'column');
+  assert.equal(c4.tables.length, 1);
+  assert.equal(c4.tables[0].table, 't');
+});
+
+test('completion: alias-qualified column resolves to table', () => {
+  const sql = 'SELECT u.na| FROM users AS u JOIN orders o ON u.id = o.user_id';
+  const c = ctxOf(sql);
+  assert.equal(c.kind, 'column');
+  assert.equal(c.alias, 'u');
+  assert.equal(c.table, 'users');
+  assert.equal(c.prefix, 'na');
+  // 스코프 테이블 수집: alias와 테이블 매핑
+  assert.ok(
+    c.tables.some((r) => r.table === 'users' && r.alias === 'u'),
+    JSON.stringify(c.tables),
+  );
+  assert.ok(
+    c.tables.some((r) => r.table === 'orders' && r.alias === 'o'),
+    JSON.stringify(c.tables),
+  );
+});
+
+test('completion: db.table. qualified column', () => {
+  const c = ctxOf('SELECT mydb.users.na| FROM mydb.users');
+  assert.equal(c.kind, 'column');
+  assert.equal(c.database, 'mydb');
+  assert.equal(c.table, 'users');
+  assert.equal(c.prefix, 'na');
+});
+
+test('completion: database context after USE', () => {
+  const c = ctxOf('USE my|');
+  assert.equal(c.kind, 'database');
+  assert.equal(c.prefix, 'my');
+});
+
+test('completion: multiple statements pick statement at cursor', () => {
+  const c = ctxOf('SELECT 1;\nSELECT na| FROM users;\nSELECT 3');
+  assert.equal(c.kind, 'column');
+  assert.ok(c.tables.some((r) => r.table === 'users'));
+});
+
+test('completion: no suggestions inside strings and comments', () => {
+  assert.equal(ctxOf("SELECT 'na|").kind, 'none');
+  assert.equal(ctxOf('SELECT "na|').kind, 'none');
+  assert.equal(ctxOf('SELECT 1 -- na|').kind, 'none');
+  assert.equal(ctxOf('SELECT /* na| ').kind, 'none');
+});
+
+test('completion: backtick identifiers including incomplete quotes', () => {
+  const c1 = ctxOf('FROM `my-db`.|');
+  assert.equal(c1.kind, 'table');
+  assert.equal(c1.database, 'my-db');
+
+  const c2 = ctxOf('FROM `my|');
+  assert.equal(c2.kind, 'table');
+  assert.equal(c2.prefix, 'my');
+  assert.equal(c2.quoteOpen, true);
+
+  const c3 = ctxOf('SELECT `weird col` , `na| FROM t');
+  assert.equal(c3.kind, 'column');
+  assert.equal(c3.prefix, 'na');
+});
+
+test('completion: none for values and unknown contexts', () => {
+  assert.equal(ctxOf('INSERT INTO files VALUES (1, |').kind, 'none');
+  assert.equal(ctxOf('SELECT * FROM t LIMIT |').kind, 'none');
+  assert.equal(completionContextAt('', 0).kind, 'none');
 });

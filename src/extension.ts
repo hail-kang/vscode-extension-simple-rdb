@@ -7,6 +7,7 @@ import { parseSqlForEditability } from './sqlParser';
 import { splitStatements, statementAtOffset, isPlainSelect, hasLimitClause } from './sqlStatements';
 import { showConnectionDialog } from './webview/ConnectionDialog';
 import { TableNode, SqlFileNode, SqlFileGroupNode } from './tree/TreeNodes';
+import { SqlCompletionProvider } from './completion/SqlCompletionProvider';
 
 /** SELECT에 LIMIT이 없을 때 자동으로 부착하는 기본 행 수(대용량 결과로 인한 프리즈 방지). */
 const DEFAULT_ROW_LIMIT = 1000;
@@ -122,6 +123,16 @@ export function activate(context: vscode.ExtensionContext) {
   updateManagedSqlContext(vscode.window.activeTextEditor);
   context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(updateManagedSqlContext));
 
+  // SQL 자동완성: 등록은 모든 SQL 파일에 대해 하되, 제안은 관리 SQL 파일에서만 반환한다.
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      { language: 'sql', scheme: 'file' },
+      new SqlCompletionProvider(treeProvider, sqlStorage),
+      '.',
+      '`',
+    ),
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('simple-rdb.addConnection', async () => {
       const result = await showConnectionDialog();
@@ -183,6 +194,8 @@ export function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand('simple-rdb.refresh', () => {
+      // DDL 등으로 변경된 스키마를 자동완성에서도 새로 보도록 메타데이터 캐시를 무효화한다.
+      treeProvider.invalidateMetaCaches();
       treeProvider.loadConnections();
     }),
 

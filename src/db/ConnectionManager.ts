@@ -14,7 +14,10 @@ export class ConnectionManager {
   private sshClient: Client | null = null;
   private sshServer: net.Server | null = null;
   private sshLocalPort: number | null = null;
-  private columnCache = new Map<string, Set<string>>();
+  /** 메타데이터 TTL 캐시(databases/tables/columns 공용). 값은 in-flight Promise를 포함한다. */
+  private metaCache = new Map<string, { promise: Promise<any>; expires: number }>();
+  /** 자동완성 등 빈번한 조회를 위한 메타데이터 캐시 TTL(ms) */
+  private static readonly META_TTL_MS = 30_000;
   /** 연결이 예기치 않게 끊겼을 때 호출(트리 상태 갱신용). 의도적 disconnect에서는 호출하지 않는다. */
   private onClosedCallback?: (reason?: string) => void;
 
@@ -103,6 +106,8 @@ export class ConnectionManager {
         this.sshServer = null;
       }
       this.sshLocalPort = null;
+      // 끊긴 연결의 메타데이터 캐시는 재접속 시 새로 조회해야 한다.
+      this.metaCache.clear();
     }
   }
 
@@ -200,6 +205,29 @@ export class ConnectionManager {
     });
   }
 
+  /**
+   * TTL 캐시가 적용된 메타데이터 로더. 같은 키의 동시 요청은 하나의 Promise를 공유하고,
+   * 실패한 요청은 캐시에서 제거해 다음 호출에서 재시도한다.
+   */
+  private cachedMeta<T>(key: string, load: () => Promise<T>): Promise<T> {
+    const now = Date.now();
+    const hit = this.metaCache.get(key);
+    if (hit && hit.expires > now) {
+      return hit.promise;
+    }
+    const promise = load().catch((err) => {
+      this.metaCache.delete(key);
+      throw err;
+    });
+    this.metaCache.set(key, { promise, expires: now + ConnectionManager.META_TTL_MS });
+    return promise;
+  }
+
+  /** DDL 실행·트리 새로고침 등 이후 메타데이터 캐시를 무효화한다. */
+  invalidateMetaCache(): void {
+    this.metaCache.clear();
+  }
+
   async query(sql: string, params?: any[]): Promise<any[]> {
     if (!this.pool) {
       throw new Error('Not connected');
@@ -219,27 +247,33 @@ export class ConnectionManager {
   }
 
   async getDatabases(): Promise<string[]> {
-    const rows = await this.query('SHOW DATABASES');
-    return rows.map((row: any) => row.Database);
+    return this.cachedMeta('databases', async () => {
+      const rows = await this.query('SHOW DATABASES');
+      return rows.map((row: any) => row.Database);
+    });
   }
 
   async getTables(database: string): Promise<string[]> {
-    const rows = await this.query(
-      `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME`,
-      [database],
-    );
-    return rows.map((row: any) => row.TABLE_NAME);
+    return this.cachedMeta(`tables:${database}`, async () => {
+      const rows = await this.query(
+        `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME`,
+        [database],
+      );
+      return rows.map((row: any) => row.TABLE_NAME);
+    });
   }
 
   async getTableColumns(database: string, table: string): Promise<any[]> {
-    const rows = await this.query(
-      `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, EXTRA, COLUMN_COMMENT
+    return this.cachedMeta(`columns:${database}.${table}`, async () => {
+      const rows = await this.query(
+        `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, EXTRA, COLUMN_COMMENT
        FROM information_schema.COLUMNS
        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
        ORDER BY ORDINAL_POSITION`,
-      [database, table],
-    );
-    return rows;
+        [database, table],
+      );
+      return rows;
+    });
   }
 
   async getPrimaryKeys(database: string, table: string): Promise<string[]> {
@@ -291,14 +325,9 @@ export class ConnectionManager {
   }
 
   private async getColumnNames(database: string, table: string): Promise<Set<string>> {
-    const cacheKey = `${database}.${table}`;
-    let names = this.columnCache.get(cacheKey);
-    if (!names) {
-      const cols = await this.getTableColumns(database, table);
-      names = new Set(cols.map((c: any) => c.COLUMN_NAME));
-      this.columnCache.set(cacheKey, names);
-    }
-    return names;
+    // getTableColumns의 TTL 캐시를 재사용한다(자동완성과 동일한 데이터 원천).
+    const cols = await this.getTableColumns(database, table);
+    return new Set(cols.map((c: any) => c.COLUMN_NAME));
   }
 
   /** 전달된 컬럼 키가 실제 테이블 컬럼인지 검증한다(신뢰되지 않은 식별자 차단). */

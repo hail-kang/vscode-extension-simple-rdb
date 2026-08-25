@@ -7,9 +7,8 @@ export class SqlFileStorage {
 
   constructor() {
     this.baseDir = path.join(os.homedir(), '.simpledb');
-    if (!fs.existsSync(this.baseDir)) {
-      fs.mkdirSync(this.baseDir, { recursive: true });
-    }
+    // onLanguage:sql 활성화로 일반 SQL 파일을 열어도 확장이 구동되므로
+    // 디렉터리 생성은 실제 파일 조작 시점으로 미룬다.
   }
 
   private connectionDir(connectionId: string): string {

@@ -35,6 +35,13 @@ export class ConnectionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
     return this.activeConnections.get(id);
   }
 
+  /** 활성화된 모든 연결의 메타데이터 캐시를 무효화한다(DDL 이후 새로고침용). */
+  invalidateMetaCaches(): void {
+    for (const manager of this.activeConnections.values()) {
+      manager.invalidateMetaCache();
+    }
+  }
+
   async loadConnections(): Promise<void> {
     this.connections = await CredentialStore.getConnections(this.context);
     this.refresh();
