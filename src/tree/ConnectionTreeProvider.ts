@@ -16,6 +16,7 @@ export class ConnectionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
 
   private connections: StoredConnection[] = [];
   private activeConnections = new Map<string, ConnectionManager>();
+  private pendingConnects = new Map<string, Promise<void>>();
   private sqlStorage: SqlFileStorage;
 
   constructor(private context: vscode.ExtensionContext) {
@@ -40,19 +41,36 @@ export class ConnectionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
   }
 
   async connectTo(id: string): Promise<void> {
-    const conn = this.connections.find((c) => c.id === id);
-    if (!conn) {
+    if (this.activeConnections.has(id)) {
       return;
     }
+    // 연결 진행 중 중복 호출은 같은 Promise를 공유해 풀·SSH 터널 이중 생성(누수)을 막는다.
+    const pending = this.pendingConnects.get(id);
+    if (pending) {
+      return pending;
+    }
+    const p = this.doConnect(id).finally(() => this.pendingConnects.delete(id));
+    this.pendingConnects.set(id, p);
+    return p;
+  }
 
-    if (this.activeConnections.has(id)) {
+  private async doConnect(id: string): Promise<void> {
+    const conn = this.connections.find((c) => c.id === id);
+    if (!conn || this.activeConnections.has(id)) {
       return;
     }
 
     const { ConnectionManager: CM } = await import('../db/ConnectionManager');
     const manager = new CM(conn);
     try {
-      await manager.connect();
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Connecting to ${conn.name}…`,
+        },
+        () => manager.connect(),
+      );
+      manager.setOnClosed((reason) => this.handleUnexpectedClose(id, reason));
       this.activeConnections.set(id, manager);
       this.refresh();
     } catch (err: any) {
@@ -60,10 +78,26 @@ export class ConnectionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
     }
   }
 
+  private handleUnexpectedClose(id: string, reason?: string): void {
+    if (!this.activeConnections.has(id)) {
+      return;
+    }
+    this.activeConnections.delete(id);
+    this.refresh();
+    const conn = this.connections.find((c) => c.id === id);
+    const name = conn ? conn.name : id;
+    vscode.window.showWarningMessage(`연결이 끊어졌습니다: ${name}${reason ? ` (${reason})` : ''}`);
+  }
+
   async disconnectFrom(id: string): Promise<void> {
     const manager = this.activeConnections.get(id);
-    if (manager) {
+    if (!manager) {
+      return;
+    }
+    try {
       await manager.disconnect();
+    } finally {
+      // pool.end()가 실패해도 트리 상태는 항상 정리한다(좀비 '연결됨' 방지).
       this.activeConnections.delete(id);
       this.refresh();
     }
